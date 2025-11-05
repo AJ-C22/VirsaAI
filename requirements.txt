@@ -1,0 +1,6 @@
+openai-whisper
+ollama
+python-dotenv
+google-genai
+torch
+numpy
