@@ -4,3 +4,4 @@ python-dotenv
 google-genai
 torch
 numpy
+psycopg2-binary
