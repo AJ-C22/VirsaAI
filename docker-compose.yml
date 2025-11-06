@@ -11,7 +11,8 @@ services:
       - POSTGRES_PORT=5432
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=mysecretpassword
-      - POSTGRES_DB=virsa
+      - POSTGRES_DB=visra
+      - PYTHONUNBUFFERED=1
     volumes:
       - .:/app
     command: ["python", "main.py"]
@@ -23,7 +24,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: mysecretpassword
-      POSTGRES_DB: virsa
+      POSTGRES_DB: visra
     ports:
       - "5433:5432"
     volumes:

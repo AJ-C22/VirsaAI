@@ -6,15 +6,7 @@ import time
 import os
 from dotenv import load_dotenv
 from google import genai
-import psycopg2
-
-conn = psycopg2.connect(
-    dbname=os.getenv("POSTGRES_DB"),
-    user=os.getenv("POSTGRES_USER"),
-    password=os.getenv("POSTGRES_PASSWORD"),
-    host=os.getenv("POSTGRES_HOST"),
-    port=os.getenv("POSTGRES_PORT"),
-)
+from db_operations import save_story
 
 def transcribe_audio(audio_file):
     print("Transcribing audio...")
@@ -107,6 +99,16 @@ def parse_text_gemini(transcript, API_KEY):
 
     print("\nHISTORICAL STORY:\n")
     print(response.text)
+    
+    # Save the story to the database
+    story_id = save_story(
+        title="Life Story Transcript",
+        body=response.text
+    )
+    if story_id:
+        print(f"\nStory saved to database with ID: {story_id}")
+    else:
+        print("\nFailed to save story to database")
 
 
 def main():
