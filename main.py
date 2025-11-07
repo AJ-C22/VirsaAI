@@ -4,9 +4,10 @@ from ollama import chat
 from ollama import ChatResponse
 import time
 import os
+import json
 from dotenv import load_dotenv
 from google import genai
-from db_operations import save_story
+from db.db_operations import save_story
 
 def transcribe_audio(audio_file):
     print("Transcribing audio...")
@@ -110,18 +111,91 @@ def parse_text_gemini(transcript, API_KEY):
     else:
         print("\nFailed to save story to database")
 
+def extract_key_data(transcript, API_KEY):
+    print("\nExtracting JSON...\n")
+    client = genai.Client(api_key=API_KEY)
+
+    prompt = f"""
+        You are an information extraction system.
+
+        Your job is to convert a raw life story transcript into a clean JSON object.
+
+        Follow these rules:
+        - DO NOT add anything that is not stated or logically implied
+        - If dates are missing, infer approximate years from context (e.g., "when I was 12")
+        - Keep summaries concise
+        - Keep section names consistent
+        - All output MUST be valid JSON only
+
+        Extract the following:
+
+        1. "summary": A 2–3 sentence summary of the life story.
+        2. "sections": A list. Each item includes:
+            - "name": String (e.g., Early Life, Immigration, Education, Career)
+            - "start_year": Integer or null
+            - "details": String (summary of the section)
+        3. "events": A list. Each event includes:
+            - "event": String
+            - "year": Integer or null
+        4. "people": Important people mentioned.
+        5. "places": List of countries/cities/regions mentioned.
+        6. "themes": Keywords representing themes (e.g., resilience, family, immigration).
+
+        Output JSON in this exact structure:
+        
+        {{
+        "summary": "",
+        "sections": [],
+        "events": [],
+        "people": [],
+        "places": [],
+        "themes": []
+        }}
+
+        Here is the raw life story:
+        {transcript}
+    """
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    
+    print("\nJSON:\n")
+    print(response.text)
+    
+    # Parse the JSON response
+    try:
+        json_text = response.text.strip()
+        if json_text.startswith("```json"):
+            json_text = json_text[7:]  
+        if json_text.startswith("```"):
+            json_text = json_text[3:]  
+        if json_text.endswith("```"):
+            json_text = json_text[:-3]  
+        
+        json_text = json_text.strip()
+        extracted_data = json.loads(json_text)
+        return extracted_data
+    except json.JSONDecodeError as e:
+        print(f"\nError parsing JSON: {e}")
+        print(f"Raw response: {response.text}")
+        return None
+
 
 def main():
     load_dotenv()
     API_KEY = os.getenv("GEMINI_KEY")
 
     start_time = time.time()
-    text = transcribe_audio("life_story_one_min.mp3")
+    text = transcribe_audio("audio_files/life_story_one_min.mp3")
     parse_text_gemini(text, API_KEY)
     end_time = time.time()
 
     time_elapsed = end_time - start_time
     print(f"\nTime Elapsed: {time_elapsed}")
+    
+    json = extract_key_data(text, API_KEY)
+    print(json)
 
 if __name__ == "__main__":
     main()
