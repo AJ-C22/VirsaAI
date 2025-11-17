@@ -116,43 +116,80 @@ def extract_key_data(transcript, API_KEY):
     client = genai.Client(api_key=API_KEY)
 
     prompt = f"""
-        You are an information extraction system.
+        You are an information extraction system for life story archiving.
 
-        Your job is to convert a raw life story transcript into a clean JSON object.
+        Your job is to convert a raw life story transcript into a structured JSON object optimized for:
+        - Timeline visualization (chronological events with dates)
+        - Family tree construction (relationships and family members)
+        - Data storage and retrieval (key facts and metadata)
 
-        Follow these rules:
-        - DO NOT add anything that is not stated or logically implied
-        - If dates are missing, infer approximate years from context (e.g., "when I was 12")
-        - Keep summaries concise
-        - Keep section names consistent
-        - All output MUST be valid JSON only
+        CRITICAL RULES:
+        - DO NOT add anything that is not stated or logically implied in the transcript
+        - If dates are missing, infer approximate years from context clues (e.g., "when I was 12", "in the 1960s")
+        - Use null for unknown dates/years, not guesses
+        - Keep all text concise and factual
+        - All output MUST be valid JSON only (no markdown, no explanations)
 
-        Extract the following:
+        Extract the following structured data:
 
         1. "summary": A 2–3 sentence summary of the life story.
-        2. "sections": A list. Each item includes:
-            - "name": String (e.g., Early Life, Immigration, Education, Career)
-            - "start_year": Integer or null
-            - "details": String (summary of the section)
-        3. "events": A list. Each event includes:
-            - "event": String
-            - "year": Integer or null
-        4. "people": Important people mentioned.
-        5. "places": List of countries/cities/regions mentioned.
-        6. "themes": Keywords representing themes (e.g., resilience, family, immigration).
 
-        Output JSON in this exact structure:
-        
-        {{
-        "summary": "",
-        "sections": [],
-        "events": [],
-        "people": [],
-        "places": [],
-        "themes": []
-        }}
+        2. "person_info": Basic information about the main person (the storyteller):
+           {{
+             "birth_year": Integer or null,
+             "birth_place": String or null,
+             "death_year": Integer or null (if mentioned),
+             "name": String or null (if mentioned in third person)
+           }}
 
-        Here is the raw life story:
+        3. "timeline_events": Chronological list of significant and note-worthy events for timeline visualization.
+           Each event includes:
+           {{
+             "year": Integer or null,
+             "event": String (concise title/summary of event),
+             "description": String (longer description with more context),
+             "location": String or null (where it happened),
+             "category": String (e.g., "birth", "immigration", "marriage", "education", "career", "family", "milestone")
+           }}
+
+        4. "family_members": People mentioned with their relationships (for family tree).
+           Each person includes:
+           {{
+             "name": String,
+             "relationship": String (e.g., "father", "mother", "spouse", "child", "sibling", "grandparent", "aunt", "uncle", "cousin"),
+             "birth_year": Integer or null,
+             "death_year": Integer or null,
+             "notes": String or null (brief context about this person)
+           }}
+
+        5. "locations": Places where the person lived or spent significant time.
+           Each location includes:
+           {{
+             "place": String (city, region, or country),
+             "start_year": Integer or null,
+             "end_year": Integer or null,
+             "purpose": String or null (e.g., "birthplace", "childhood home", "immigration destination", "work")
+           }}
+
+        6. "occupations": Career or work history (if mentioned).
+           Each occupation includes:
+           {{
+             "role": String (job title or occupation),
+             "start_year": Integer or null,
+             "end_year": Integer or null,
+             "location": String or null (where they worked)
+           }}
+
+        7. "themes": Key themes or topics (for searchability).
+           Array of strings (e.g., ["immigration", "family", "education", "resilience", "faith", "community"])
+
+        OUTPUT REQUIREMENTS:
+        - Return ONLY valid JSON (no markdown, no code blocks, no explanations)
+        - Use null for missing/unknown values
+        - Use empty arrays [] if a section has no data
+        - Include all fields described above in the JSON structure
+
+        Here is the raw life story transcript:
         {transcript}
     """
     response = client.models.generate_content(
@@ -194,8 +231,15 @@ def main():
     time_elapsed = end_time - start_time
     print(f"\nTime Elapsed: {time_elapsed}")
     
-    json = extract_key_data(text, API_KEY)
-    print(json)
+    extracted_data = extract_key_data(text, API_KEY)
+    if extracted_data:
+        print("\nExtracted Data Summary:")
+        print(f"  Summary: {extracted_data.get('summary', 'N/A')[:100]}...")
+        print(f"  Timeline Events: {len(extracted_data.get('timeline_events', []))}")
+        print(f"  Family Members: {len(extracted_data.get('family_members', []))}")
+        print(f"  Locations: {len(extracted_data.get('locations', []))}")
+        print(f"  Occupations: {len(extracted_data.get('occupations', []))}")
+        print(f"  Themes: {extracted_data.get('themes', [])}")
 
 if __name__ == "__main__":
     main()
