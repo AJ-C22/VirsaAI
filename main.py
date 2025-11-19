@@ -7,7 +7,7 @@ import os
 import json
 from dotenv import load_dotenv
 from google import genai
-from db.db_operations import save_story
+from db.db_operations import save_story, save_complete_story
 
 def transcribe_audio(audio_file):
     print("Transcribing audio...")
@@ -103,7 +103,7 @@ def parse_text_gemini(transcript, API_KEY):
     
     # Save the story to the database
     story_id = save_story(
-        title="Life Story Transcript",
+        person_name="Unknown",
         body=response.text
     )
     if story_id:
@@ -142,7 +142,21 @@ def extract_key_data(transcript, API_KEY):
              "name": String or null (if mentioned in third person)
            }}
 
-        3. "timeline_events": Chronological list of significant and note-worthy events for timeline visualization.
+        3. "timeline_events": Chronological list of ONLY the most significant and note-worthy events that would be seen in a timeline.
+           
+           INCLUDE events like:
+           - Major life transitions (birth, immigration, marriage, death)
+           - Significant achievements (graduation, career milestones, awards)
+           - Important family events (birth of children, family reunions, losses)
+           - Major moves or relocations
+           - Historical or cultural milestones that affected the person
+           
+           EXCLUDE routine or minor events like:
+           - Daily activities, regular work days, casual conversations
+           - Minor trips or visits unless they were life-changing
+           - Routine celebrations or holidays (unless specifically significant)
+           - Vague memories without clear dates or importance
+           
            Each event includes:
            {{
              "year": Integer or null,
@@ -240,6 +254,18 @@ def main():
         print(f"  Locations: {len(extracted_data.get('locations', []))}")
         print(f"  Occupations: {len(extracted_data.get('occupations', []))}")
         print(f"  Themes: {extracted_data.get('themes', [])}")
+        
+        # Save complete story with all extracted data
+        person_name = extracted_data.get('person_info', {}).get('name') or 'Unknown'
+        story_id = save_complete_story(
+            person_name=person_name,
+            body=text,  # Using transcript as body, or you can call parse_text_gemini to get formatted version
+            extracted_data=extracted_data
+        )
+        if story_id:
+            print(f"\n✓ Complete story saved to database with ID: {story_id}")
+        else:
+            print("\n✗ Failed to save complete story to database")
 
 if __name__ == "__main__":
     main()
