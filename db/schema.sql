@@ -49,7 +49,7 @@ CREATE TABLE timeline_events (
 CREATE TABLE family_members (
     id SERIAL PRIMARY KEY,
     story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
+    name TEXT,
     relationship VARCHAR(50) NOT NULL,
     birth_year INTEGER,
     death_year INTEGER,
