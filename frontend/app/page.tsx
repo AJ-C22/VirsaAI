@@ -7,12 +7,10 @@ export default function Home() {
       <nav className="fixed top-0 w-full z-50 bg-white/80 backdrop-blur-md border-b border-[#F5E6D3]">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-[#D4AF37] to-[#B8860B] flex items-center justify-center">
-              <History className="w-6 h-6 text-white" />
-            </div>
-            <span className="text-2xl font-bold bg-gradient-to-r from-[#B8860B] to-[#D4AF37] bg-clip-text text-transparent">
-              VirsaAI
-            </span>
+            <img src="/VirsaLogo.png" className="h-8 w-8 object-contain" alt="Virsa Logo" />
+              <span className="text-2xl font-bold bg-gradient-to-r from-[#B8860B] to-[#D4AF37] bg-clip-text text-transparent">
+                VirsaAI
+              </span>
           </div>
           <div className="flex items-center gap-6">
             <a href="#features" className="text-sm font-medium text-[#6B5B3D] hover:text-[#B8860B] transition-colors">

@@ -237,7 +237,7 @@ def main():
     load_dotenv()
     API_KEY = os.getenv("GEMINI_KEY")
     start_time = time.time()
-    text = transcribe_audio("audio_files/life_story_one_min.mp3")
+    text = transcribe_audio("audio_files/life_story_2.mp3")
     parse_text_gemini(text, API_KEY)
     end_time = time.time()
 
