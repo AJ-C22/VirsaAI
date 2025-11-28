@@ -64,8 +64,8 @@ export default function RecordStoryPage() {
             <div className="rounded-3xl border border-[#F5E6D3] bg-white/70 shadow-xl backdrop-blur-md p-14">
               <div className="flex flex-col items-center text-center">
                 {/* Mic Button */}
-                <button className="w-30 h-30 rounded-full bg-gradient-to-br from-[#D4AF37] to-[#B8860B] flex items-center justify-center shadow-2xl hover:scale-105 transition-transform">
-                  <Mic className="w-14 h-14 text-white drop-shadow-md" />
+                <button className="w-25 h-25 rounded-full bg-gradient-to-br from-[#D4AF37] to-[#B8860B] flex items-center justify-center shadow-2xl hover:scale-105 transition-transform">
+                  <Mic className="w-10 h-10 text-white drop-shadow-md" />
                 </button>
 
                 <p className="mt-6 text-xl text-[#6B5B3D]/70">
