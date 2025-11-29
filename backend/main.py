@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from db.db_operations import get_timeline_events, get_all_people
+from db.db_operations import *
 
 app = FastAPI()
 
@@ -30,6 +30,13 @@ def list_people():
     Returns the list of people with their story/timeline metadata.
     """
     return get_all_people()
+
+@app.get("/story_library")
+def list_stories():
+    """
+    Returns the list of people with their story.
+    """
+    return get_all_stories()
 
 # Optional: A test function you can run manually
 def main():

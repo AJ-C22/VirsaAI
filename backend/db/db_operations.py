@@ -298,6 +298,42 @@ def get_story(story_id: int) -> Optional[Dict]:
         traceback.print_exc()
         return None
 
+
+def get_all_stories():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        s.id AS story_id,
+                        s.person_name,
+                        LENGTH(s.body) AS char_count,
+                        s.body,
+                        s.created_at,
+                        s.updated_at
+                    FROM stories s;
+                """)
+
+                rows = cur.fetchall()
+
+        # Build safe output for frontend
+        return [
+            {
+                "story_id": r[0],
+                "person_name": r[1] or "Unknown",
+                "character_count": r[2] or 0,
+                "story": r[3] or "",
+                "created_at": r[4],
+                "updated_at": r[5]
+            }
+            for r in rows
+        ]
+
+    except Exception as e:
+        print("Error retrieving stories:", e)
+        return []
+
+
 def get_all_people():
     try:
         with get_db_connection() as conn:
@@ -310,6 +346,7 @@ def get_all_people():
                         s.updated_at
                     FROM stories s
                     LEFT JOIN timeline_events te ON te.story_id = s.id
+                    WHERE s.person_name IS NOT NULL
                     GROUP BY s.id, s.person_name, s.updated_at
                     ORDER BY s.updated_at DESC;
                 """)

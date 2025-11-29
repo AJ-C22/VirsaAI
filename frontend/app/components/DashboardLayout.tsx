@@ -42,7 +42,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </Link>
 
           <Link
-            href="/library"
+            href="/story_library"
             className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-[#FFF4D8] transition"
           >
             <BookOpen className="h-5 w-5 text-[#B8860B]" />
