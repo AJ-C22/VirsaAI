@@ -38,6 +38,15 @@ def list_stories():
     """
     return get_all_stories()
 
+@app.get("/story/{story_id}")
+def get_story(story_id: int):
+    story = supabase.table("stories").select("*").eq("id", story_id).single().execute()
+
+    if story.data is None:
+        return {"error": "Story not found"}
+
+    return story.data
+
 # Optional: A test function you can run manually
 def main():
     print(get_timeline_events(4))

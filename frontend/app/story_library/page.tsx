@@ -50,7 +50,7 @@ export default function StoryLibraryPage() {
           {filteredStories.map((story) => (
             <a
               key={story.id}
-              href={`/story/${story.story_id}`}
+              href={`/story/${story.id}`}
               className="block p-6 rounded-2xl border border-[#F5E6D3] bg-gradient-to-br from-[#FFF8E2] to-[#FFEFC5] shadow-md hover:shadow-xl hover:-translate-y-1 transition-all"
             >
               <div className="flex items-center gap-3 mb-4">
@@ -62,7 +62,12 @@ export default function StoryLibraryPage() {
 
               <p className="text-[#6B5B3D]/70 text-sm line-clamp-3">
                 {story.summary || "No summary available."}
-              </p>
+                </p>
+
+                {/* Character Count */}
+                <div className="mt-3 inline-block px-3 py-1 text-xs rounded-full bg-[#FAE8C8] text-[#6B4E2E] border border-[#E6D8C2]">
+                {story.character_count ?? story.summary?.length ?? 0} chars
+                </div>
 
               <div className="mt-4 text-xs text-[#6B5B3D]/50">
                 Last updated:{" "}
