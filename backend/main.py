@@ -29,10 +29,7 @@ def list_people():
     """
     Returns the list of people with their story/timeline metadata.
     """
-    return [
-        {"story_id": 4, "name": "Kuldip Singh", "image": None},
-        {"story_id": 7, "name": "Manjit Kaur", "image": None},
-    ]
+    return get_all_people()
 
 # Optional: A test function you can run manually
 def main():

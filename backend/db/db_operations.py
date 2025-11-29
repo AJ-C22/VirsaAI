@@ -310,23 +310,27 @@ def get_all_people():
                         s.updated_at
                     FROM stories s
                     LEFT JOIN timeline_events te ON te.story_id = s.id
-                    GROUP BY s.id
+                    GROUP BY s.id, s.person_name, s.updated_at
                     ORDER BY s.updated_at DESC;
                 """)
-            result = cursor.fetchall()
 
+                rows = cur.fetchall()
+
+        # Prevent NULLs and make frontend safe
         return [
             {
                 "story_id": r[0],
-                "person_name": r[1],
+                "person_name": r[1] if r[1] else "Unknown",
                 "event_count": r[2],
                 "updated_at": r[3],
             }
-            for r in result
+            for r in rows
         ]
+
     except Exception as e:
         print(f"Error retrieving stories: {e}")
         return []
+
 
 def get_all_stories(limit: int = 100) -> List[Dict]:
     """
@@ -343,7 +347,8 @@ def get_all_stories(limit: int = 100) -> List[Dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT id, person_name, summary, created_at 
-                       FROM stories ORDER BY created_at DESC LIMIT %s""",
+                       FROM stories 
+                       ORDER BY created_at DESC LIMIT %s""",
                     (limit,)
                 )
                 rows = cur.fetchall()
