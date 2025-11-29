@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import Sidebar from "../../components/DashboardLayout";
 
 interface TimelineEvent {
   year: string;
@@ -42,7 +43,7 @@ export default function TimelinePage() {
   }
 
   return (
-    
+    <Sidebar>
     <div className="min-h-screen py-20 px-6 bg-gradient-to-br from-[#FFFDF8] via-[#FFF9F0] to-[#FFFDF8] relative overflow-hidden">
         
       
@@ -215,5 +216,6 @@ export default function TimelinePage() {
         }
       `}</style>
     </div>
+    </Sidebar>
   );
 }
