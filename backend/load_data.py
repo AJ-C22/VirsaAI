@@ -66,7 +66,7 @@ def parse_text_gemini(transcript, API_KEY):
         ### Your task:
 
         ### Your ONLY output:
-        A **single organized biography** with section headers. 
+        A **single organized biography** with section headers that . 
         DO NOT repeat, rewrite, or include the transcript in raw form.
         DO NOT output anything before or after the biography.
         DO NOT include 'HISTORICAL STORY:', 'Transcript:', or any headings I did not request.

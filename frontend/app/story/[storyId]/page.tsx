@@ -38,7 +38,7 @@ export default function StoryPage() {
       <div className="min-h-screen bg-[#F7F1E5] px-6 py-12 flex justify-center">
 
         {/* WIDER CONTENT — now max-w-4xl */}
-        <div className="max-w-4xl w-full">
+        <div className="max-w-5xl w-full">
 
           {/* Title */}
           <h1 className="text-5xl font-serif font-bold text-[#4C3B23] tracking-tight mb-3">
@@ -81,13 +81,30 @@ export default function StoryPage() {
           </div>
 
           {/* WIDER STORY BOX */}
-          <div className="bg-[#FFF7EB] border border-[#E5D6BB] rounded-2xl shadow-xl p-12">
+          <div className="bg-[#FFF7EB] border border-[#E5D6BB] rounded-2xl shadow-xl p-8">
 
             <article className="prose max-w-none text-[#4A3A25] leading-relaxed font-serif text-xl">
 
-              {story.story
-                ?.split("\n")
-                .map((paragraph: string, idx: number) => (
+            {story.story
+              ?.split("\n")
+              .map((paragraph: string, idx: number) => {
+                const trimmed = paragraph.trim();
+
+                // Check if it's a ### heading
+                if (trimmed.startsWith("### ")) {
+                  const titleText = trimmed.replace("### ", "");
+                  return (
+                    <h2
+                      key={idx}
+                      className="text-3xl font-bold text-[#4C3B23] mt-10 mb-4 font-serif"
+                    >
+                      {titleText}
+                    </h2>
+                  );
+                }
+
+                // Normal paragraph
+                return (
                   <p
                     key={idx}
                     className={`mb-6 ${
@@ -98,7 +115,8 @@ export default function StoryPage() {
                   >
                     {paragraph}
                   </p>
-                ))}
+                );
+              })}
 
             </article>
 
