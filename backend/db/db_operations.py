@@ -1,5 +1,6 @@
 """
 Database operations for VirsaAI stories and related data.
+Updated to use `raw_body` (original raw text) and `story` (AI processed narrative).
 """
 import json
 from .db_connection import get_db_connection
@@ -7,16 +8,18 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 
-def save_story(person_name: str, body: str, summary: Optional[str] = None, extracted_data: Optional[Dict] = None) -> Optional[int]:
+# ---------------------------
+# SAVING / INSERTING
+# ---------------------------
+def save_story(person_name: str, raw_body: str, story: str, summary: Optional[str] = None, extracted_data: Optional[Dict] = None) -> Optional[int]:
     """
     Save a story to the database with optional summary and extracted data.
-    
     Args:
         person_name: Name of the person (main storyteller)
-        body: Story content/body
+        raw_body: Original raw transcript/text
+        story: Processed / AI-generated narrative
         summary: Optional summary of the story
         extracted_data: Optional extracted JSON data
-        
     Returns:
         The ID of the inserted story, or None if error occurred
     """
@@ -24,8 +27,8 @@ def save_story(person_name: str, body: str, summary: Optional[str] = None, extra
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO stories (person_name, body, summary, extracted_data) VALUES (%s, %s, %s, %s) RETURNING id",
-                    (person_name, body, summary, json.dumps(extracted_data) if extracted_data else None)
+                    "INSERT INTO stories (person_name, raw_body, story, summary, extracted_data) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (person_name, raw_body, story, summary, json.dumps(extracted_data) if extracted_data else None)
                 )
                 story_id = cur.fetchone()[0]
                 return story_id
@@ -34,16 +37,15 @@ def save_story(person_name: str, body: str, summary: Optional[str] = None, extra
         return None
 
 
-def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Optional[int]:
+def save_complete_story(person_name: str, raw_body: str, story: str, summary: str, extracted_data: Dict) -> Optional[int]:
     """
     Save a complete story with all extracted data (person, timeline events, family members, etc.).
     This is the main function to use when saving a processed story.
-    
     Args:
         person_name: Name of the person (main storyteller)
-        body: Story content/body
+        raw_body: Raw transcript/text
+        story: Processed AI narrative
         extracted_data: Dictionary containing all extracted data from extract_key_data()
-        
     Returns:
         The ID of the inserted story, or None if error occurred
     """
@@ -52,27 +54,27 @@ def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Op
             with conn.cursor() as cur:
                 # Get person info first
                 person_info = extracted_data.get('person_info', {})
-                
+
                 # 1. Save main story (use person_name from parameter, fallback to extracted data)
                 story_person_name = person_name or person_info.get('name') or 'Unknown'
                 cur.execute(
-                    "INSERT INTO stories (person_name, body, summary, extracted_data) VALUES (%s, %s, %s, %s) RETURNING id",
-                    (story_person_name, body, extracted_data.get('summary'), json.dumps(extracted_data))
+                    "INSERT INTO stories (person_name, raw_body, story, summary, extracted_data) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                    (story_person_name, raw_body, story, summary, json.dumps(extracted_data))
                 )
                 story_id = cur.fetchone()[0]
-                
+
                 # 2. Save person info
                 if person_info:
                     cur.execute(
                         """INSERT INTO person (story_id, person_name, person_birth_year, person_birth_place, person_death_year)
                            VALUES (%s, %s, %s, %s, %s)""",
-                        (story_id, 
+                        (story_id,
                          person_info.get('name'),
                          person_info.get('birth_year'),
                          person_info.get('birth_place'),
                          person_info.get('death_year'))
                     )
-                
+
                 # 3. Save timeline events
                 timeline_events = extracted_data.get('timeline_events', [])
                 for event in timeline_events:
@@ -86,7 +88,7 @@ def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Op
                          event.get('location'),
                          event.get('category'))
                     )
-                
+
                 # 4. Save family members
                 family_members = extracted_data.get('family_members', [])
                 for member in family_members:
@@ -100,7 +102,7 @@ def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Op
                          member.get('death_year'),
                          member.get('notes'))
                     )
-                
+
                 # 5. Save locations
                 locations = extracted_data.get('locations', [])
                 for location in locations:
@@ -113,7 +115,7 @@ def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Op
                          location.get('end_year'),
                          location.get('purpose'))
                     )
-                
+
                 # 6. Save occupations
                 occupations = extracted_data.get('occupations', [])
                 for occupation in occupations:
@@ -126,7 +128,7 @@ def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Op
                          occupation.get('end_year'),
                          occupation.get('location'))
                     )
-                
+
                 # 7. Save themes (get or create theme, then link to story)
                 themes = extracted_data.get('themes', [])
                 for theme_name in themes:
@@ -139,7 +141,7 @@ def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Op
                         else:
                             cur.execute("INSERT INTO themes (name) VALUES (%s) RETURNING id", (theme_name,))
                             theme_id = cur.fetchone()[0]
-                        
+
                         # Link theme to story
                         cur.execute(
                             """INSERT INTO story_themes (story_id, theme_id)
@@ -147,7 +149,7 @@ def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Op
                                ON CONFLICT (story_id, theme_id) DO NOTHING""",
                             (story_id, theme_id)
                         )
-                
+
                 return story_id
     except Exception as e:
         print(f"Error saving complete story: {e}")
@@ -156,39 +158,38 @@ def save_complete_story(person_name: str, body: str, extracted_data: Dict) -> Op
         return None
 
 
-def get_story(story_id: int) -> Optional[Dict]:
+# ---------------------------
+# GET A SINGLE STORY (full)
+# ---------------------------
+def get_story_full(story_id: int) -> Optional[Dict]:
     """
     Retrieve a story by ID with all related data.
-    
-    Args:
-        story_id: The ID of the story to retrieve
-        
-    Returns:
-        Dictionary with complete story data, or None if not found
+    Returns a dictionary (single object) or None.
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                # Get main story
+                # Get main story (note columns raw_body and story)
                 cur.execute(
-                    """SELECT id, person_name, body, summary, extracted_data, created_at, updated_at 
+                    """SELECT id, person_name, raw_body, story, summary, extracted_data, created_at, updated_at 
                        FROM stories WHERE id = %s""",
                     (story_id,)
                 )
                 row = cur.fetchone()
                 if not row:
                     return None
-                
-                story = {
+
+                story_obj = {
                     'id': row[0],
                     'person_name': row[1],
-                    'body': row[2],
-                    'summary': row[3],
-                    'extracted_data': json.loads(row[4]) if row[4] else None,
-                    'created_at': row[5],
-                    'updated_at': row[6]
+                    'raw_body': row[2],
+                    'story': row[3],
+                    'summary': row[4],
+                    'extracted_data': json.loads(row[5]) if row[5] else None,
+                    'created_at': row[6],
+                    'updated_at': row[7]
                 }
-                
+
                 # Get person info
                 cur.execute(
                     """SELECT person_name, person_birth_year, person_birth_place, person_death_year
@@ -197,87 +198,87 @@ def get_story(story_id: int) -> Optional[Dict]:
                 )
                 person_row = cur.fetchone()
                 if person_row:
-                    story['person'] = {
+                    story_obj['person'] = {
                         'name': person_row[0],
                         'birth_year': person_row[1],
                         'birth_place': person_row[2],
                         'death_year': person_row[3]
                     }
-                
+
                 # Get timeline events
                 cur.execute(
                     """SELECT id, year, event, description, location, category, created_at
                        FROM timeline_events WHERE story_id = %s ORDER BY year NULLS LAST, created_at""",
                     (story_id,)
                 )
-                story['timeline_events'] = [
+                story_obj['timeline_events'] = [
                     {
-                        'id': row[0],
-                        'year': row[1],
-                        'event': row[2],
-                        'description': row[3],
-                        'location': row[4],
-                        'category': row[5],
-                        'created_at': row[6]
+                        'id': r[0],
+                        'year': r[1],
+                        'event': r[2],
+                        'description': r[3],
+                        'location': r[4],
+                        'category': r[5],
+                        'created_at': r[6]
                     }
-                    for row in cur.fetchall()
+                    for r in cur.fetchall()
                 ]
-                
+
                 # Get family members
                 cur.execute(
                     """SELECT id, name, relationship, birth_year, death_year, notes, created_at
                        FROM family_members WHERE story_id = %s""",
                     (story_id,)
                 )
-                story['family_members'] = [
+                story_obj['family_members'] = [
                     {
-                        'id': row[0],
-                        'name': row[1],
-                        'relationship': row[2],
-                        'birth_year': row[3],
-                        'death_year': row[4],
-                        'notes': row[5],
-                        'created_at': row[6]
+                        'id': r[0],
+                        'name': r[1],
+                        'relationship': r[2],
+                        'birth_year': r[3],
+                        'death_year': r[4],
+                        'notes': r[5],
+                        'created_at': r[6]
                     }
-                    for row in cur.fetchall()
+                    for r in cur.fetchall()
                 ]
-                
+
                 # Get locations
                 cur.execute(
                     """SELECT id, place, start_year, end_year, purpose, created_at
                        FROM locations WHERE story_id = %s ORDER BY start_year NULLS LAST""",
                     (story_id,)
                 )
-                story['locations'] = [
+                story_obj['locations'] = [
                     {
-                        'id': row[0],
-                        'place': row[1],
-                        'start_year': row[2],
-                        'end_year': row[3],
-                        'purpose': row[4],
-                        'created_at': row[5]
+                        'id': r[0],
+                        'place': r[1],
+                        'start_year': r[2],
+                        'end_year': r[3],
+                        'purpose': r[4],
+                        'created_at': r[5]
                     }
-                    for row in cur.fetchall()
+                    for r in cur.fetchall()
                 ]
-                
+
                 # Get occupations
                 cur.execute(
                     """SELECT id, role, start_year, end_year, location, created_at
                        FROM occupations WHERE story_id = %s ORDER BY start_year NULLS LAST""",
                     (story_id,)
                 )
-                story['occupations'] = [
+                story_obj['occupations'] = [
                     {
-                        'id': row[0],
-                        'role': row[1],
-                        'start_year': row[2],
-                        'end_year': row[3],
-                        'location': row[4],
-                        'created_at': row[5]
+                        'id': r[0],
+                        'role': r[1],
+                        'start_year': r[2],
+                        'end_year': r[3],
+                        'location': r[4],
+                        'created_at': r[5]
                     }
-                    for row in cur.fetchall()
+                    for r in cur.fetchall()
                 ]
-                
+
                 # Get themes
                 cur.execute(
                     """SELECT t.id, t.name
@@ -286,29 +287,36 @@ def get_story(story_id: int) -> Optional[Dict]:
                        WHERE st.story_id = %s""",
                     (story_id,)
                 )
-                story['themes'] = [
-                    {'id': row[0], 'name': row[1]}
-                    for row in cur.fetchall()
+                story_obj['themes'] = [
+                    {'id': r[0], 'name': r[1]}
+                    for r in cur.fetchall()
                 ]
-                
-                return story
+
+                return story_obj
     except Exception as e:
         print(f"Error retrieving story: {e}")
         import traceback
         traceback.print_exc()
         return None
 
-def get_story(story_id: int):
+
+# ---------------------------
+# GET A SIMPLE STORY (for frontend story page)
+# ---------------------------
+def get_story(story_id: int) -> Optional[Dict]:
+    """
+    Return a single object with keys: story_id, person_name, story (AI narrative), raw_body, created_at, updated_at
+    """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT id, person_name, body, created_at, updated_at
+                    SELECT id, person_name, story, raw_body, created_at, updated_at
                     FROM stories
                     WHERE id = %s
                 """, (story_id,))
 
-                row = cur.fetchone() 
+                row = cur.fetchone()
 
         if not row:
             return None
@@ -316,18 +324,21 @@ def get_story(story_id: int):
         return {
             "story_id": row[0],
             "person_name": row[1] or "Unknown",
-            "story_body": row[2],          
-            "created_at": row[3],
-            "updated_at": row[4]
+            "story": row[2] or "",
+            "raw_body": row[3] or "",
+            "created_at": row[4],
+            "updated_at": row[5]
         }
 
     except Exception as e:
-        print("Error retrieving stories:", e)
+        print("Error retrieving story (simple):", e)
         return None
 
 
-
-def get_all_stories():
+# ---------------------------
+# GET ALL STORIES (list for library / cards)
+# ---------------------------
+def get_all_stories() -> List[Dict]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -335,10 +346,11 @@ def get_all_stories():
                     SELECT 
                         s.id AS story_id,
                         s.person_name,
-                        LENGTH(s.body) AS char_count,
-                        s.body,
+                        LENGTH(s.raw_body) AS char_count,
+                        s.story,
                         s.created_at,
-                        s.updated_at
+                        s.updated_at,
+                        s.summary
                     FROM stories s;
                 """)
 
@@ -352,7 +364,8 @@ def get_all_stories():
                 "character_count": r[2] or 0,
                 "story": r[3] or "",
                 "created_at": r[4],
-                "updated_at": r[5]
+                "updated_at": r[5],
+                "summary": r[6]
             }
             for r in rows
         ]
@@ -362,7 +375,10 @@ def get_all_stories():
         return []
 
 
-def get_all_people():
+# ---------------------------
+# GET ALL PEOPLE (for timeline/people list)
+# ---------------------------
+def get_all_people() -> List[Dict]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -397,15 +413,12 @@ def get_all_people():
         return []
 
 
-def get_all_stories(limit: int = 100) -> List[Dict]:
+# ---------------------------
+# PAGED/LIMITED LISTED get_all_stories
+# ---------------------------
+def get_all_stories_limited(limit: int = 100) -> List[Dict]:
     """
     Retrieve all stories, ordered by creation date (newest first).
-    
-    Args:
-        limit: Maximum number of stories to retrieve
-        
-    Returns:
-        List of story dictionaries (basic info only, use get_story() for full data)
     """
     try:
         with get_db_connection() as conn:
@@ -431,17 +444,10 @@ def get_all_stories(limit: int = 100) -> List[Dict]:
         return []
 
 
+# ---------------------------
+# Stories by theme
+# ---------------------------
 def get_stories_by_theme(theme_name: str, limit: int = 100) -> List[Dict]:
-    """
-    Retrieve stories that have a specific theme.
-    
-    Args:
-        theme_name: Name of the theme to search for
-        limit: Maximum number of stories to retrieve
-        
-    Returns:
-        List of story dictionaries
-    """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -470,15 +476,12 @@ def get_stories_by_theme(theme_name: str, limit: int = 100) -> List[Dict]:
         return []
 
 
+# ---------------------------
+# Timeline events (unchanged)
+# ---------------------------
 def get_timeline_events(story_id: int) -> List[Dict]:
     """
     Get all timeline events for a story, ordered chronologically.
-    
-    Args:
-        story_id: The story ID
-        
-    Returns:
-        List of timeline event dictionaries
     """
     try:
         with get_db_connection() as conn:
@@ -507,15 +510,12 @@ def get_timeline_events(story_id: int) -> List[Dict]:
         return []
 
 
+# ---------------------------
+# DELETE / UPDATE
+# ---------------------------
 def delete_story(story_id: int) -> bool:
     """
     Delete a story by ID (cascades to all related data).
-    
-    Args:
-        story_id: The ID of the story to delete
-        
-    Returns:
-        True if deleted, False otherwise
     """
     try:
         with get_db_connection() as conn:
@@ -527,43 +527,38 @@ def delete_story(story_id: int) -> bool:
         return False
 
 
-def update_story(story_id: int, person_name: Optional[str] = None, body: Optional[str] = None, 
-                 summary: Optional[str] = None) -> bool:
+def update_story(story_id: int, person_name: Optional[str] = None, raw_body: Optional[str] = None, 
+                 story: Optional[str] = None, summary: Optional[str] = None) -> bool:
     """
     Update an existing story.
-    
-    Args:
-        story_id: The ID of the story to update
-        person_name: New person name (optional)
-        body: New body content (optional)
-        summary: New summary (optional)
-        
-    Returns:
-        True if updated, False otherwise
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 updates = []
                 values = []
-                
+
                 if person_name is not None:
                     updates.append("person_name = %s")
                     values.append(person_name)
-                if body is not None:
-                    updates.append("body = %s")
-                    values.append(body)
+                if raw_body is not None:
+                    updates.append("raw_body = %s")
+                    values.append(raw_body)
+                if story is not None:
+                    updates.append("story = %s")
+                    values.append(story)
                 if summary is not None:
                     updates.append("summary = %s")
                     values.append(summary)
-                
+
                 if not updates:
                     return False
-                
+
+                updates.append("updated_at = NOW()")
                 values.append(story_id)
                 query = f"UPDATE stories SET {', '.join(updates)} WHERE id = %s"
                 cur.execute(query, values)
                 return cur.rowcount > 0
     except Exception as e:
-        print(f"Error updating story: {e}")
+        print("Error updating story:", e)
         return False

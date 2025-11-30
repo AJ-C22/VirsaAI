@@ -65,16 +65,18 @@ def parse_text_gemini(transcript, API_KEY):
 
         ### Your task:
 
+        ### Your ONLY output:
+        A **single organized biography** with section headers. 
+        DO NOT repeat, rewrite, or include the transcript in raw form.
+        DO NOT output anything before or after the biography.
+        DO NOT include 'HISTORICAL STORY:', 'Transcript:', or any headings I did not request.
+
         Organize the following transcript into a structured family biography written in a warm but factual tone. 
         Focus on clarity, chronological flow, and emotional truth.Use section headers like ‘Early Life in Punjab,’ 
         ‘Migration to Canada,’ and ‘Family & Legacy.’ Add historical or cultural context where relevant (e.g., local traditions, 
         global events, immigration era). Preserve personal quotes or expressions exactly as spoken. Include small reflections that 
         connect past and present generations. Avoid exaggeration — keep it natural and documentary-style, suitable for a family 
         history archive.
-
-        TONE: Keep the tone in the voice of the reader. Serious, not like a book but a narrated, to the point story of someone's life (like britannica 
-        where the facts and history is the most important thing, not the "story" or creative narration). Don't use quotes from the audio file.
-        You essentially want to turn the first person narration -> third person with similiar tone.
 
         ### Instructions:
         1. Identify logical story sections — for example: "Childhood Memories", "Moving Abroad",
@@ -98,18 +100,13 @@ def parse_text_gemini(transcript, API_KEY):
         contents=prompt
     )
 
+    organized_story = response.text.strip()
+
     print("\nHISTORICAL STORY:\n")
-    print(response.text)
-    
-    # Save the story to the database
-    story_id = save_story(
-        person_name="Unknown",
-        body=response.text
-    )
-    if story_id:
-        print(f"\nStory saved to database with ID: {story_id}")
-    else:
-        print("\nFailed to save story to database")
+    print(organized_story)
+
+    return organized_story
+
 
 def extract_key_data(transcript, API_KEY):
     print("\nExtracting JSON...\n")
@@ -236,35 +233,33 @@ def extract_key_data(transcript, API_KEY):
 def main():
     load_dotenv()
     API_KEY = os.getenv("GEMINI_KEY")
-    start_time = time.time()
-    text = transcribe_audio("audio_files/life_story_2.mp3")
-    parse_text_gemini(text, API_KEY)
-    end_time = time.time()
 
-    time_elapsed = end_time - start_time
-    print(f"\nTime Elapsed: {time_elapsed}")
-    
+    # 1. TRANSCRIBE AUDIO
+    text = transcribe_audio("audio_files/life_story_2.mp3")
+
+    # 2. ORGANIZE INTO A FULL BIOGRAPHY
+    organized_story = parse_text_gemini(text, API_KEY)
+
+    # 3. EXTRACT STRUCTURED JSON
     extracted_data = extract_key_data(text, API_KEY)
+
     if extracted_data:
-        print("\nExtracted Data Summary:")
-        print(f"  Summary: {extracted_data.get('summary', 'N/A')[:100]}...")
-        print(f"  Timeline Events: {len(extracted_data.get('timeline_events', []))}")
-        print(f"  Family Members: {len(extracted_data.get('family_members', []))}")
-        print(f"  Locations: {len(extracted_data.get('locations', []))}")
-        print(f"  Occupations: {len(extracted_data.get('occupations', []))}")
-        print(f"  Themes: {extracted_data.get('themes', [])}")
-        
-        # Save complete story with all extracted data
-        person_name = extracted_data.get('person_info', {}).get('name') or 'Unknown'
-        story_id = save_complete_story(
+        summary = extracted_data.get("summary")
+
+        person_name = extracted_data.get("person_info", {}).get("name") or "Unknown"
+
+        final_id = save_complete_story(
             person_name=person_name,
-            body=text,  # Using transcript as body, or you can call parse_text_gemini to get formatted version
+            raw_body=text,
+            story=organized_story,
+            summary=summary,
             extracted_data=extracted_data
         )
-        if story_id:
-            print(f"\n✓ Complete story saved to database with ID: {story_id}")
-        else:
-            print("\n✗ Failed to save complete story to database")
 
-if __name__ == "__main__":
+        if final_id:
+            print(f"\n✓ Complete story saved with ID: {final_id}")
+        else:
+            print("\n✗ Failed to save complete story")
+
+if __name__ == "__main__": 
     main()

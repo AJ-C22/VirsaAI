@@ -12,7 +12,8 @@ DROP TABLE IF EXISTS themes CASCADE;
 CREATE TABLE stories (
     id SERIAL PRIMARY KEY,
     person_name TEXT NOT NULL,
-    body TEXT NOT NULL,
+    raw_body TEXT NOT NULL,
+    story TEXT NOT NULL,
     summary TEXT,
     -- Store full extracted JSON for flexibility
     extracted_data JSONB,

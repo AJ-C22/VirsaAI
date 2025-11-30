@@ -49,8 +49,8 @@ export default function StoryLibraryPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
           {filteredStories.map((story) => (
             <a
-              key={story.id}
-              href={`/story/${story.id}`}
+              key={story.story_id}
+              href={`/story/${story.story_id}`}
               className="block p-6 rounded-2xl border border-[#F5E6D3] bg-gradient-to-br from-[#FFF8E2] to-[#FFEFC5] shadow-md hover:shadow-xl hover:-translate-y-1 transition-all"
             >
               <div className="flex items-center gap-3 mb-4">
