@@ -298,6 +298,34 @@ def get_story(story_id: int) -> Optional[Dict]:
         traceback.print_exc()
         return None
 
+def get_story(story_id: int):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, person_name, body, created_at, updated_at
+                    FROM stories
+                    WHERE id = %s
+                """, (story_id,))
+
+                row = cur.fetchone() 
+
+        if not row:
+            return None
+
+        return {
+            "story_id": row[0],
+            "person_name": row[1] or "Unknown",
+            "story_body": row[2],          
+            "created_at": row[3],
+            "updated_at": row[4]
+        }
+
+    except Exception as e:
+        print("Error retrieving stories:", e)
+        return None
+
+
 
 def get_all_stories():
     try:

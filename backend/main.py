@@ -39,13 +39,9 @@ def list_stories():
     return get_all_stories()
 
 @app.get("/story/{story_id}")
-def get_story(story_id: int):
-    story = supabase.table("stories").select("*").eq("id", story_id).single().execute()
-
-    if story.data is None:
-        return {"error": "Story not found"}
-
-    return story.data
+def story(story_id: int):
+    print("HIT BACKEND WITH:", story_id)
+    return get_story(story_id)
 
 # Optional: A test function you can run manually
 def main():

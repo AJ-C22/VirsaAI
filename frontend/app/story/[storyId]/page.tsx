@@ -55,14 +55,14 @@ export default function StoryPage() {
           </a>
 
           <a
-            href={`/record/${story.person_id}`}
+            href={`/record/${story.story_id}`}
             className="flex items-center gap-2 bg-white border border-[#E6D8C2] px-5 py-3 rounded-xl shadow hover:shadow-md transition-all text-[#6B4E2E]"
           >
             <Mic size={18} /> Record Audio
           </a>
 
           <a
-            href={`/timeline/${story.person_id}`}
+            href={`/timeline/${story.story_id}`}
             className="flex items-center gap-2 bg-white border border-[#E6D8C2] px-5 py-3 rounded-xl shadow hover:shadow-md transition-all text-[#6B4E2E]"
           >
             <Calendar size={18} /> View Timeline
@@ -71,7 +71,7 @@ export default function StoryPage() {
 
         {/* Story Content Box */}
         <div className="bg-[#FFF8E8] border border-[#F0E2C2] rounded-2xl shadow p-10 leading-relaxed text-[#5A4A32] text-lg prose prose-lg max-w-none">
-          {story.story_text?.split("\n").map((paragraph: string, idx: number) => (
+          {story.story_body?.split("\n").map((paragraph: string, idx: number) => (
             <p key={idx} className="mb-6">
               {paragraph}
             </p>
