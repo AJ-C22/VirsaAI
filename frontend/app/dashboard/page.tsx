@@ -47,9 +47,11 @@ export default function Dashboard() {
               <p className="text-[#6B5B3D]/70 mb-4">
                 Browse all the biographies and stories you've created.
               </p>
-              <button className="px-4 py-2 rounded-lg border border-[#D4AF37] text-[#B8860B] font-medium hover:bg-[#FFF7E2] transition">
-                View Stories
-              </button>
+              <Link href="/story_library">
+                <button className="px-4 py-2 rounded-lg border border-[#D4AF37] text-[#B8860B] font-medium hover:bg-[#FFF7E2] transition">
+                  View Stories
+                </button>
+              </Link>
             </div>
 
             {/* Card 3 */}
@@ -63,9 +65,12 @@ export default function Dashboard() {
               <p className="text-[#6B5B3D]/70 mb-4">
                 Explore connections across generations and add new members.
               </p>
-              <button className="px-4 py-2 rounded-lg bg-[#B8860B] text-white font-medium hover:scale-105 transition">
-                View Tree
-              </button>
+              <Link href="/family">
+                <button className="px-4 py-2 rounded-lg bg-[#B8860B] text-white font-medium hover:scale-105 transition">
+                  View Tree
+                </button>
+              </Link>
+              
             </div>
           </div>
 
