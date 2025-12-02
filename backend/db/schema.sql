@@ -59,6 +59,16 @@ CREATE TABLE family_members (
     CONSTRAINT fk_family_story FOREIGN KEY (story_id) REFERENCES stories(id) ON DELETE CASCADE
 );
 
+-- Relationships between family members
+CREATE TABLE family_relationships (
+    id SERIAL PRIMARY KEY,
+    member_id INTEGER NOT NULL REFERENCES family_members(id) ON DELETE CASCADE,
+    related_to INTEGER NOT NULL REFERENCES family_members(id) ON DELETE CASCADE,
+    relation_type VARCHAR(50) NOT NULL, -- parent, child, spouse, sibling, etc
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+
 -- Locations where the person lived or spent significant time
 CREATE TABLE locations (
     id SERIAL PRIMARY KEY,

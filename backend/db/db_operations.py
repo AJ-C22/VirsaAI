@@ -5,7 +5,7 @@ Updated to use `raw_body` (original raw text) and `story` (AI processed narrativ
 import json
 from .db_connection import get_db_connection
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Optional
 
 
 # ---------------------------
@@ -509,6 +509,102 @@ def get_timeline_events(story_id: int) -> List[Dict]:
         print(f"Error retrieving timeline events: {e}")
         return []
 
+# --- Family members CRUD for the interactive tree ---
+# --- Family members CRUD for the interactive tree ---
+
+def get_all_family_members() -> List[Dict]:
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, story_id, name, relationship, birth_year, death_year, notes,
+                           created_at, updated_at
+                    FROM family_members
+                    ORDER BY id
+                """)
+                rows = cur.fetchall()
+
+        return [
+            {
+                "id": r[0],
+                "story_id": r[1],
+                "name": r[2],
+                "relationship": r[3],
+                "birth_year": r[4],
+                "death_year": r[5],
+                "notes": r[6],
+                "created_at": r[7],
+                "updated_at": r[8],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        print("Error get_all_family_members:", e)
+        return []
+
+
+def create_family_member_global(name: str,
+                                relationship: str,
+                                story_id: Optional[int]=None,
+                                birth_year: Optional[int]=None,
+                                death_year: Optional[int]=None,
+                                notes: Optional[str]=None) -> Optional[int]:
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO family_members
+                        (story_id, name, relationship, birth_year, death_year, notes)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """,
+                (story_id, name, relationship, birth_year, death_year, notes))
+
+                row = cur.fetchone()
+                return row[0] if row else None
+
+    except Exception as e:
+        print("Error create_family_member_global:", e)
+        return None
+
+
+
+def update_family_member(member_id: int, name: Optional[str]=None, relationship: Optional[str]=None, birth_year: Optional[int]=None, death_year: Optional[int]=None, notes: Optional[str]=None) -> bool:
+    try:
+        updates = []
+        vals = []
+        if name is not None:
+            updates.append("name = %s"); vals.append(name)
+        if relationship is not None:
+            updates.append("relationship = %s"); vals.append(relationship)
+        if birth_year is not None:
+            updates.append("birth_year = %s"); vals.append(birth_year)
+        if death_year is not None:
+            updates.append("death_year = %s"); vals.append(death_year)
+        if notes is not None:
+            updates.append("notes = %s"); vals.append(notes)
+        if not updates:
+            return False
+        vals.append(member_id)
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE family_members SET {', '.join(updates)}, updated_at = NOW() WHERE id = %s", tuple(vals))
+                return cur.rowcount > 0
+    except Exception as e:
+        print("Error update_family_member:", e)
+        return False
+
+
+def delete_family_member(member_id: int) -> bool:
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM family_members WHERE id = %s", (member_id,))
+                return cur.rowcount > 0
+    except Exception as e:
+        print("Error delete_family_member:", e)
+        return False
 
 # ---------------------------
 # DELETE / UPDATE

@@ -43,6 +43,46 @@ def story(story_id: int):
     print("HIT BACKEND WITH:", story_id)
     return get_story(story_id)
 
+@app.get("/family")
+def read_all_family():
+    return get_all_family_members()
+
+@app.post("/family/member")
+def create_member(payload: dict):
+    member_id = create_family_member_global(
+        name=payload.get("name"),
+        relationship=payload.get("relationship") or "relative",
+        story_id=payload.get("story_id"),  # optional but allowed
+        birth_year=payload.get("birth_year"),
+        death_year=payload.get("death_year"),
+        notes=payload.get("notes")
+    )
+    if not member_id:
+        raise HTTPException(status_code=500, detail="Failed to create member")
+    return {"id": member_id}
+
+@app.patch("/family/member/{member_id}")
+def update_member(member_id: int, payload: dict):
+    ok = update_family_member(
+        member_id=member_id,
+        name=payload.get("name"),
+        relationship=payload.get("relationship"),
+        birth_year=payload.get("birth_year"),
+        death_year=payload.get("death_year"),
+        notes=payload.get("notes")
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update")
+    return {"ok": True}
+
+@app.delete("/family/member/{member_id}")
+def delete_member(member_id: int):
+    ok = delete_family_member(member_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to delete")
+    return {"ok": True}
+
+
 # Optional: A test function you can run manually
 def main():
     print(get_timeline_events(4))
