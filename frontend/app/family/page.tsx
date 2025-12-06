@@ -16,6 +16,9 @@ import ReactFlow, {
   NodeProps,
 } from "reactflow";
 import "reactflow/dist/style.css";
+import { Handle, Position } from "reactflow";
+import { ConnectionLineType } from "reactflow";
+import Sidebar from "../components/DashboardLayout";
 
 /* =========================================================
    ===================== TYPES =============================
@@ -66,12 +69,25 @@ async function createMember(payload: {
 
 function MemberNode({ data }: NodeProps<Member>) {
   return (
-    <div className="select-none w-[240px] bg-white rounded-xl shadow-md border border-neutral-200 p-4">
+    <div className="select-none w-[240px] bg-white rounded-xl shadow-md border border-neutral-200 p-4 relative">
+      {/* Connectable Handles */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!bg-[#c89532]"
+        style={{ zIndex: 10 }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!bg-[#c89532]"
+        style={{ zIndex: 10 }}
+      />
+
       <div className="text-lg font-semibold text-[#7a6321]">{data.name}</div>
       <div className="text-sm text-neutral-600 mt-1">{data.relationship}</div>
       <div className="text-xs text-neutral-400 mt-2">
-        {data.birth_year ?? ""}{" "}
-        {data.death_year ? `— ${data.death_year}` : ""}
+        {data.birth_year ?? ""} {data.death_year ? `— ${data.death_year}` : ""}
       </div>
     </div>
   );
@@ -196,11 +212,31 @@ function FamilyTreeCanvas({ members }: { members: Member[] }) {
     [members]
   );
 
+  const edgeOptions = {
+    type: "smoothstep" as const,
+    animated: false,
+    style: {
+      stroke: "#b58b2b",
+      strokeWidth: 2.2,
+    },
+  };
+
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
   const onConnect = useCallback(
-    (c: Connection) => setEdges((e) => addEdge(c, e)),
+    (params: Connection) =>
+      setEdges((eds) =>
+        addEdge(
+          {
+            ...params,
+            type: "smoothstep",
+            animated: false,
+            style: { stroke: "#b58b2b", strokeWidth: 2 },
+          },
+          eds
+        )
+      ),
     []
   );
 
@@ -214,9 +250,12 @@ function FamilyTreeCanvas({ members }: { members: Member[] }) {
         onConnect={onConnect}
         nodeTypes={nodeTypes}
         fitView
+        defaultEdgeOptions={edgeOptions}
+        connectionLineStyle={{ stroke: "#b58b2b", strokeWidth: 2 }}
+        connectionLineType={ConnectionLineType.SmoothStep}
         style={{ background: "transparent" }}
       >
-        <MiniMap />
+        <MiniMap nodeStrokeColor="#7a6321" nodeColor="#fff" />
         <Controls />
         <Background gap={16} size={1} />
       </ReactFlow>
@@ -245,38 +284,40 @@ export default function Page() {
   }, [load]);
 
   return (
-    <div className="w-full h-screen p-8 bg-[#faf6ea]">
-      <header className="flex justify-between mb-6">
-        <div>
-          <h1 className="text-3xl font-bold text-[#7a6321]">Family Tree</h1>
-          <p className="text-neutral-600">
-            Automatically builds as your stories grow.
-          </p>
-        </div>
+    <Sidebar>
+      <div className="w-full h-screen p-8 bg-[#faf6ea]">
+        <header className="flex justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-bold text-[#7a6321]">Family Tree</h1>
+            <p className="text-neutral-600">
+              Automatically builds as your stories grow.
+            </p>
+          </div>
 
-        <button
-          onClick={() => setShowAdd(true)}
-          className="px-4 py-2 bg-[#d9a441] hover:bg-[#c89532] text-white rounded-md shadow"
-        >
-          + Add Member
-        </button>
-      </header>
+          <button
+            onClick={() => setShowAdd(true)}
+            className="px-4 py-2 bg-[#d9a441] hover:bg-[#c89532] text-white rounded-md shadow"
+          >
+            + Add Member
+          </button>
+        </header>
 
-      <main className="w-full h-[80vh] bg-white rounded-xl p-4 shadow border">
-        {loading ? (
-          <p className="text-neutral-500">Loading...</p>
-        ) : members.length === 0 ? (
-          <p className="text-neutral-500">No family members yet.</p>
-        ) : (
-          <FamilyTreeCanvas members={members} />
-        )}
-      </main>
+        <main className="w-full h-[80vh] bg-white rounded-xl p-4 shadow border">
+          {loading ? (
+            <p className="text-neutral-500">Loading...</p>
+          ) : members.length === 0 ? (
+            <p className="text-neutral-500">No family members yet.</p>
+          ) : (
+            <FamilyTreeCanvas members={members} />
+          )}
+        </main>
 
-      <AddMemberModal
-        open={showAdd}
-        onClose={() => setShowAdd(false)}
-        onCreated={() => load()}
-      />
-    </div>
+        <AddMemberModal
+          open={showAdd}
+          onClose={() => setShowAdd(false)}
+          onCreated={() => load()}
+        />
+      </div>
+    </Sidebar>
   );
 }
