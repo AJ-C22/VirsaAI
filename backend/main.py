@@ -44,8 +44,28 @@ def story(story_id: int):
     return get_story(story_id)
 
 @app.get("/family")
-def read_all_family():
+def get_family():
     return get_all_family_members()
+    '''[
+        {
+            "id": 1,
+            "story_id": 1,
+            "name": "Koolwun Kaur",
+            "relationship": "spouse",
+            "birth_year": None,
+            "death_year": None
+        },
+        {
+            "id": 2,
+            "story_id": 1,
+            "name": "Gurturin Singh's father",
+            "relationship": "father",
+            "birth_year": None,
+            "death_year": None
+        }
+    ]
+    '''
+    
 
 @app.post("/family/member")
 def create_member(payload: dict):

@@ -510,34 +510,31 @@ def get_timeline_events(story_id: int) -> List[Dict]:
         return []
 
 # --- Family members CRUD for the interactive tree ---
-# --- Family members CRUD for the interactive tree ---
-
 def get_all_family_members() -> List[Dict]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT id, story_id, name, relationship, birth_year, death_year, notes,
-                           created_at, updated_at
+                           created_at
                     FROM family_members
                     ORDER BY id
                 """)
                 rows = cur.fetchall()
-
-        return [
-            {
-                "id": r[0],
-                "story_id": r[1],
-                "name": r[2],
-                "relationship": r[3],
-                "birth_year": r[4],
-                "death_year": r[5],
-                "notes": r[6],
-                "created_at": r[7],
-                "updated_at": r[8],
-            }
-            for r in rows
-        ]
+                print(f"Fetched {len(rows)} rows")
+                return [
+                    {
+                        "id": row[0],
+                        "story_id": row[1],
+                        "name": row[2],
+                        "relationship": row[3],
+                        "birth_year": row[4],
+                        "death_year": row[5],
+                        "notes": row[6],
+                        "created_at": row[7]
+                    }
+                    for row in rows
+                ]
     except Exception as e:
         print("Error get_all_family_members:", e)
         return []
