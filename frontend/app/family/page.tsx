@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -14,10 +20,10 @@ import ReactFlow, {
   Connection,
   NodeTypes,
   NodeProps,
+  ConnectionLineType,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { Handle, Position } from "reactflow";
-import { ConnectionLineType } from "reactflow";
 import Sidebar from "../components/DashboardLayout";
 
 /* =========================================================
@@ -67,21 +73,40 @@ async function createMember(payload: {
    ===================== CUSTOM NODE ========================
    ========================================================= */
 
-function MemberNode({ data }: NodeProps<Member>) {
+/**
+ * MemberNode - custom node renderer
+ * - Small centered handles for sleek style
+ */
+function MemberNode({ id, data, selected }: NodeProps<Member>) {
   return (
     <div className="select-none w-[240px] bg-white rounded-xl shadow-md border border-neutral-200 p-4 relative">
-      {/* Connectable Handles */}
+      {/* Top handle (incoming) */}
       <Handle
         type="target"
         position={Position.Top}
         className="!bg-[#c89532]"
-        style={{ zIndex: 10 }}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          zIndex: 10,
+          transform: "translateX(-50%)",
+          left: "50%",
+        }}
       />
+      {/* Bottom handle (outgoing) */}
       <Handle
         type="source"
         position={Position.Bottom}
         className="!bg-[#c89532]"
-        style={{ zIndex: 10 }}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          zIndex: 10,
+          transform: "translateX(-50%)",
+          left: "50%",
+        }}
       />
 
       <div className="text-lg font-semibold text-[#7a6321]">{data.name}</div>
@@ -89,12 +114,66 @@ function MemberNode({ data }: NodeProps<Member>) {
       <div className="text-xs text-neutral-400 mt-2">
         {data.birth_year ?? ""} {data.death_year ? `— ${data.death_year}` : ""}
       </div>
+
+      {selected && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            borderRadius: 12,
+            boxShadow: "inset 0 0 0 2px rgba(165,128,55,0.08)",
+            pointerEvents: "none",
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * UnionNode - invisible anchor node used to connect two parents to their children
+ * Option A: fully invisible visually, but contains handles for edges.
+ */
+function UnionNode() {
+  // Render visually invisible element; handles exist for edge attachment.
+  // Keep handles small and centered.
+  return (
+    <div style={{ width: 2, height: 2, opacity: 0 }}>
+      <Handle
+        type="target"
+        position={Position.Top}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: "transparent",
+          border: "none",
+          zIndex: 10,
+          transform: "translateX(-50%)",
+          left: "50%",
+        }}
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: "transparent",
+          border: "none",
+          zIndex: 10,
+          transform: "translateX(-50%)",
+          left: "50%",
+        }}
+      />
     </div>
   );
 }
 
 const nodeTypes: NodeTypes = {
   memberNode: MemberNode,
+  unionNode: UnionNode,
 };
 
 /* =========================================================
@@ -200,32 +279,180 @@ function AddMemberModal({
    ===================== MAIN CANVAS ========================
    ========================================================= */
 
+/**
+ * FamilyTreeCanvas
+ * - displays nodes from members
+ * - allows connecting nodes (frontend-only)
+ * - supports selecting nodes/edges and pressing Delete/Backspace to remove them
+ * - automatically converts two parents connected to same child into a union node (Option D)
+ */
 function FamilyTreeCanvas({ members }: { members: Member[] }) {
+  const reactFlowWrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // create initial nodes from members (positions are simple — you can layout later)
   const initialNodes: Node[] = useMemo(
     () =>
       members.map((m, i) => ({
         id: String(m.id),
         type: "memberNode",
         data: m,
-        position: { x: 50, y: i * 140 },
+        position: { x: 50 + (i % 3) * 260, y: Math.floor(i / 3) * 160 }, // spread a bit
       })),
     [members]
   );
 
-  const edgeOptions = {
+  const defaultEdgeOptions = {
     type: "smoothstep" as const,
     animated: false,
     style: {
       stroke: "#b58b2b",
-      strokeWidth: 2.2,
+      strokeWidth: 2,
     },
   };
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge[]>([]);
 
+  // helper: find node by id
+  const findNode = useCallback(
+    (id: string) => nodes.find((n) => n.id === id),
+    [nodes]
+  );
+
+  // helper: generate a unique id
+  const makeId = useCallback((prefix = "") => {
+    return `${prefix}${Date.now().toString(36)}-${Math.floor(
+      Math.random() * 1000
+    )}`;
+  }, []);
+
+  // create a union node positioned between two parents
+  const createUnionBetween = useCallback(
+    (parentAId: string, parentBId: string) => {
+      const parentA = findNode(parentAId);
+      const parentB = findNode(parentBId);
+      // fallback position if missing
+      const ax = parentA?.position?.x ?? 100;
+      const ay = parentA?.position?.y ?? 100;
+      const bx = parentB?.position?.x ?? ax + 160;
+      const by = parentB?.position?.y ?? ay;
+
+      const ux = (ax + bx) / 2;
+      const uy = (ay + by) / 2 + 60; // push union slightly below parents
+
+      const unionId = makeId("union-");
+      const unionNode: Node = {
+        id: unionId,
+        type: "unionNode",
+        position: { x: ux, y: uy },
+        data: {},
+      };
+
+      setNodes((nds) => [...nds, unionNode]);
+      return unionId;
+    },
+    [findNode, makeId, setNodes]
+  );
+
+  // onConnect: detect case where two parents end up connecting to same child -> create/merge union
   const onConnect = useCallback(
-    (params: Connection) =>
+    (params: Connection) => {
+      const { source, target } = params;
+      if (!source || !target) return;
+
+      // if connecting a node to itself, ignore
+      if (source === target) return;
+
+      const sourceNode = findNode(source);
+      const targetNode = findNode(target);
+      if (!sourceNode || !targetNode) return;
+
+      // Only apply union logic when connecting memberNode -> memberNode (parent -> child)
+      if (
+        sourceNode.type === "memberNode" &&
+        targetNode.type === "memberNode"
+      ) {
+        // find existing incoming edges to the child (target)
+        const incomingToChild = edges.filter((e) => e.target === target);
+
+        // CASE 1: child has no parents yet -> simple edge
+        if (incomingToChild.length === 0) {
+          setEdges((eds) =>
+            addEdge(
+              {
+                ...params,
+                type: "smoothstep",
+                animated: false,
+                style: { stroke: "#b58b2b", strokeWidth: 2 },
+              },
+              eds
+            )
+          );
+          return;
+        }
+
+        // CASE 2: child already has one parent (direct parent edge)
+        // determine if existing parent is a union or a member
+        const existing = incomingToChild[0];
+        const existingSourceNode = findNode(existing.source);
+
+        // If existing source is a union node, just add new parent -> union
+        if (existingSourceNode && existingSourceNode.type === "unionNode") {
+          // attach source -> existingUnion
+          setEdges((eds) =>
+            addEdge(
+              {
+                id: makeId("edge-"),
+                source,
+                target: existingSourceNode.id,
+                type: "smoothstep",
+                style: { stroke: "#b58b2b", strokeWidth: 2 },
+              },
+              eds
+            )
+          );
+          return;
+        }
+
+        // existing source is a member (parent A). We need to create a union and rewire.
+        // Remove the existing edge parentA -> child
+        setEdges((eds) => eds.filter((e) => !(e.source === existing.source && e.target === target)));
+
+        // create union between existing.source and new source
+        const unionId = createUnionBetween(existing.source, source);
+
+        // add edges: parentA -> union, parentB -> union, union -> child
+        setEdges((eds) =>
+          eds
+            .concat([
+              {
+                id: makeId("edge-"),
+                source: existing.source,
+                target: unionId,
+                type: "smoothstep",
+                style: { stroke: "#b58b2b", strokeWidth: 2 },
+              },
+              {
+                id: makeId("edge-"),
+                source: source,
+                target: unionId,
+                type: "smoothstep",
+                style: { stroke: "#b58b2b", strokeWidth: 2 },
+              },
+              {
+                id: makeId("edge-"),
+                source: unionId,
+                target: target,
+                type: "smoothstep",
+                style: { stroke: "#b58b2b", strokeWidth: 2 },
+              },
+            ])
+        );
+
+        return;
+      }
+
+      // fallback: any other kind of connect, just add edge
       setEdges((eds) =>
         addEdge(
           {
@@ -236,29 +463,77 @@ function FamilyTreeCanvas({ members }: { members: Member[] }) {
           },
           eds
         )
-      ),
-    []
+      );
+    },
+    [edges, findNode, setEdges, createUnionBetween, makeId]
   );
+
+  // delete selected nodes & edges via keyboard
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+
+      setNodes((nds) => nds.filter((n) => !n.selected));
+      setEdges((eds) => eds.filter((e) => !e.selected));
+    },
+    [setNodes, setEdges]
+  );
+
+  // attach keydown listener when component mounts and remove on unmount
+  useEffect(() => {
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onKeyDown]);
+
+  // convenience: allow deleting a single node programmatically (frontend-only)
+  const deleteNodeById = useCallback(
+    (id: string) => {
+      setNodes((nds) => nds.filter((n) => n.id !== id));
+      setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id));
+    },
+    [setNodes, setEdges]
+  );
+
+  // Pass delete callback into nodes' data (optional future use) — run once
+  useEffect(() => {
+    setNodes((cur) =>
+      cur.map((n) => ({
+        ...n,
+        data: {
+          ...(n.data ?? {}),
+          // @ts-ignore - adding delete callback to node data for convenience
+          onDelete: deleteNodeById,
+        },
+      }))
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <ReactFlowProvider>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        nodeTypes={nodeTypes}
-        fitView
-        defaultEdgeOptions={edgeOptions}
-        connectionLineStyle={{ stroke: "#b58b2b", strokeWidth: 2 }}
-        connectionLineType={ConnectionLineType.SmoothStep}
-        style={{ background: "transparent" }}
+      <div
+        ref={reactFlowWrapperRef}
+        className="w-full h-full"
+        style={{ width: "100%", height: "100%" }}
       >
-        <MiniMap nodeStrokeColor="#7a6321" nodeColor="#fff" />
-        <Controls />
-        <Background gap={16} size={1} />
-      </ReactFlow>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          nodeTypes={nodeTypes}
+          fitView
+          defaultEdgeOptions={defaultEdgeOptions}
+          connectionLineStyle={{ stroke: "#b58b2b", strokeWidth: 2 }}
+          connectionLineType={ConnectionLineType.SmoothStep}
+          style={{ background: "transparent" }}
+        >
+          <MiniMap nodeStrokeColor="#7a6321" nodeColor="#fff" />
+          <Controls />
+          <Background gap={16} size={1} />
+        </ReactFlow>
+      </div>
     </ReactFlowProvider>
   );
 }
@@ -274,9 +549,16 @@ export default function Page() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const data = await fetchFamily();
-    setMembers(data);
-    setLoading(false);
+    try {
+      const data = await fetchFamily();
+      setMembers(data);
+    } catch (e: any) {
+      // keep it quiet; show no members if fetch fails
+      console.error("Failed to fetch family:", e);
+      setMembers([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -291,6 +573,12 @@ export default function Page() {
             <h1 className="text-3xl font-bold text-[#7a6321]">Family Tree</h1>
             <p className="text-neutral-600">
               Automatically builds as your stories grow.
+            </p>
+            <p className="text-xs text-neutral-500 mt-1">
+              Tip: drag from the bottom handle of one card to the top handle of
+              another to create a connection. If two parents are connected to
+              the same child, the app will group them automatically. Select an
+              edge/node and press Delete to remove it (frontend-only).
             </p>
           </div>
 
@@ -308,14 +596,18 @@ export default function Page() {
           ) : members.length === 0 ? (
             <p className="text-neutral-500">No family members yet.</p>
           ) : (
-            <FamilyTreeCanvas members={members} />
+            <div style={{ width: "100%", height: "100%" }}>
+              <FamilyTreeCanvas members={members} />
+            </div>
           )}
         </main>
 
         <AddMemberModal
           open={showAdd}
           onClose={() => setShowAdd(false)}
-          onCreated={() => load()}
+          onCreated={async () => {
+            await load();
+          }}
         />
       </div>
     </Sidebar>
