@@ -2,11 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Sidebar from "../components/DashboardLayout";
-
-const API_ROOT =
-  process.env.NEXT_PUBLIC_API_ROOT ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000";
+import { useAuth } from "../lib/auth";
 
 const SYSTEMS = [
   { id: "punjabi", label: "Punjabi (Chacha, Bhabi, Nani…)" },
@@ -24,22 +20,23 @@ type Vault = {
 };
 
 export default function VaultSettingsPage() {
+  const { apiRoot, authHeaders } = useAuth();
   const [vault, setVault] = useState<Vault | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_ROOT}/vault`)
+    fetch(`${apiRoot}/vault`)
       .then((r) => r.json())
       .then(setVault)
       .catch(() => setVault(null));
-  }, []);
+  }, [apiRoot]);
 
   const save = async () => {
     if (!vault) return;
     setSaved(false);
-    const res = await fetch(`${API_ROOT}/vault`, {
+    const res = await fetch(`${apiRoot}/vault`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
         name: vault.name,
         cultural_context: vault.cultural_context,
@@ -54,7 +51,7 @@ export default function VaultSettingsPage() {
   if (!vault) {
     return (
       <Sidebar>
-        <p className="text-[#6B5B3D]">Loading vault…</p>
+        <p className="text-ink-soft">Loading vault…</p>
       </Sidebar>
     );
   }
@@ -62,23 +59,25 @@ export default function VaultSettingsPage() {
   return (
     <Sidebar>
       <div className="max-w-xl">
-        <p className="text-sm font-medium text-[#B8860B] mb-2 tracking-wide">
-          FAMILY VAULT
-        </p>
-        <h1 className="text-4xl font-bold text-[#4C3B23] mb-3">Culture & kinship</h1>
-        <p className="text-[#6B5B3D]/75 mb-8">
-          VirsaAI uses this context to label relatives with culturally correct
+        <p className="label-eyebrow mb-3">Family vault</p>
+        <h1 className="font-display text-4xl text-ink mb-3">Culture & kinship</h1>
+        <p className="text-ink-soft mb-8 leading-relaxed">
+          Virsa uses this context to label relatives with culturally correct
           kinship terms on the family tree (e.g. Chacha, Bhabi, Lao Lao).
         </p>
 
-        <label className="block text-sm font-medium mb-2">Vault name</label>
+        <label className="block text-xs font-medium text-ink-soft mb-1.5">
+          Vault name
+        </label>
         <input
           value={vault.name || ""}
           onChange={(e) => setVault({ ...vault, name: e.target.value })}
-          className="w-full rounded-xl border border-[#E8D9C0] px-4 py-3 mb-5 outline-none focus:border-[#D4AF37]"
+          className="field mb-5"
         />
 
-        <label className="block text-sm font-medium mb-2">Kinship system</label>
+        <label className="block text-xs font-medium text-ink-soft mb-1.5">
+          Kinship system
+        </label>
         <select
           value={vault.kinship_system || "punjabi"}
           onChange={(e) =>
@@ -88,7 +87,7 @@ export default function VaultSettingsPage() {
               cultural_context: e.target.value,
             })
           }
-          className="w-full rounded-xl border border-[#E8D9C0] px-4 py-3 mb-5 outline-none focus:border-[#D4AF37] bg-white"
+          className="field mb-5"
         >
           {SYSTEMS.map((s) => (
             <option key={s.id} value={s.id}>
@@ -97,13 +96,15 @@ export default function VaultSettingsPage() {
           ))}
         </select>
 
-        <label className="block text-sm font-medium mb-2">Archive language</label>
+        <label className="block text-xs font-medium text-ink-soft mb-1.5">
+          Archive language
+        </label>
         <select
           value={vault.primary_language || "en"}
           onChange={(e) =>
             setVault({ ...vault, primary_language: e.target.value })
           }
-          className="w-full rounded-xl border border-[#E8D9C0] px-4 py-3 mb-6 outline-none focus:border-[#D4AF37] bg-white"
+          className="field mb-6"
         >
           <option value="en">English</option>
           <option value="pa">Punjabi</option>
@@ -111,15 +112,11 @@ export default function VaultSettingsPage() {
           <option value="hi">Hindi</option>
         </select>
 
-        <button
-          type="button"
-          onClick={() => void save()}
-          className="px-6 py-3 rounded-xl bg-[#4C3B23] text-white font-medium"
-        >
+        <button type="button" onClick={() => void save()} className="btn-primary">
           Save settings
         </button>
         {saved && (
-          <p className="text-sm text-emerald-700 mt-3">
+          <p className="text-sm text-brass-deep mt-3">
             Saved. Open the family tree to see updated kinship labels.
           </p>
         )}

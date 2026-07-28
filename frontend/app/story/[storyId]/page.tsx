@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { motion } from "framer-motion";
 import {
   Calendar,
   Users,
@@ -12,26 +13,19 @@ import {
   ArrowRight,
 } from "lucide-react";
 import DashboardLayout from "../../components/DashboardLayout";
-
-const API_ROOT =
-  process.env.NEXT_PUBLIC_API_ROOT ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000";
+import { useAuth } from "../../lib/auth";
 
 type FullStory = {
   id: string;
   person_name: string;
   story: string;
   summary?: string;
-  subject_person_id?: string;
   timeline_events?: Array<{
     id: string;
     year?: number;
     event?: string;
     title?: string;
     description?: string;
-    location?: string;
-    category?: string;
   }>;
   occupations?: Array<{ role: string; start_year?: number; location?: string }>;
   locations?: Array<{ place: string; purpose?: string }>;
@@ -39,7 +33,6 @@ type FullStory = {
     family_members?: Array<{
       name: string;
       relationship?: string;
-      notes?: string;
     }>;
     themes?: string[];
   };
@@ -48,6 +41,7 @@ type FullStory = {
 
 export default function StoryPage() {
   const { storyId } = useParams<{ storyId: string }>();
+  const { apiRoot } = useAuth();
   const [story, setStory] = useState<FullStory | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,7 +49,7 @@ export default function StoryPage() {
     if (!storyId) return;
     async function load() {
       try {
-        const res = await fetch(`${API_ROOT}/story/${storyId}/full`);
+        const res = await fetch(`${apiRoot}/story/${storyId}/full`);
         if (!res.ok) throw new Error("Story not found");
         setStory(await res.json());
       } catch (e: unknown) {
@@ -63,12 +57,12 @@ export default function StoryPage() {
       }
     }
     void load();
-  }, [storyId]);
+  }, [storyId, apiRoot]);
 
   if (error) {
     return (
       <DashboardLayout>
-        <div className="p-10 text-center text-red-800">{error}</div>
+        <p className="text-[#9b2c2c]">{error}</p>
       </DashboardLayout>
     );
   }
@@ -76,9 +70,7 @@ export default function StoryPage() {
   if (!story) {
     return (
       <DashboardLayout>
-        <div className="p-10 text-center text-lg text-[#6B5B3D]">
-          Loading story…
-        </div>
+        <p className="text-ink-soft">Loading story…</p>
       </DashboardLayout>
     );
   }
@@ -89,194 +81,171 @@ export default function StoryPage() {
 
   return (
     <DashboardLayout>
-      <div className="min-h-screen bg-[#F7F1E5] px-6 py-12">
-        <div className="max-w-5xl mx-auto">
-          <p className="text-sm font-medium text-[#B8860B] mb-2 tracking-wide">
-            ARCHIVED ORAL HISTORY
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+      >
+        <p className="label-eyebrow mb-3">Archived oral history</p>
+        <h1 className="font-display text-4xl md:text-5xl text-ink mb-3 text-balance">
+          {story.person_name}
+        </h1>
+        {story.summary && (
+          <p className="text-ink-soft text-lg mb-8 max-w-3xl leading-relaxed">
+            {story.summary}
           </p>
-          <h1 className="text-4xl md:text-5xl font-serif font-bold text-[#4C3B23] tracking-tight mb-3">
-            {story.person_name}
-          </h1>
-          {story.summary && (
-            <p className="text-[#7B6A4B] text-lg mb-8 max-w-3xl leading-relaxed">
-              {story.summary}
-            </p>
-          )}
+        )}
 
-          <div className="flex flex-wrap gap-3 mb-10">
-            <Link
-              href={`/timeline/${storyId}`}
-              className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-[#C8A56A] text-white font-medium shadow hover:bg-[#b8965f] transition"
-            >
-              <Calendar size={18} /> View timeline
-            </Link>
-            <Link
-              href="/family"
-              className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-white border border-[#DCCDB2] shadow hover:shadow-md transition text-[#5D4A2E]"
-            >
-              <Users size={18} /> Open family tree
-            </Link>
-            <Link
-              href="/record"
-              className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-white border border-[#DCCDB2] shadow hover:shadow-md transition text-[#5D4A2E]"
-            >
-              <Mic size={18} /> Add another story
-            </Link>
-          </div>
-
-          <div className="grid lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2">
-              <div className="bg-[#FFF7EB] border border-[#E5D6BB] rounded-2xl shadow-sm p-8 md:p-10">
-                <article className="prose max-w-none text-[#4A3A25] leading-relaxed font-serif text-lg">
-                  {story.story?.split("\n").map((paragraph, idx) => {
-                    const trimmed = paragraph.trim();
-                    if (!trimmed) return null;
-                    if (trimmed.startsWith("### ")) {
-                      return (
-                        <h2
-                          key={idx}
-                          className="text-2xl md:text-3xl font-bold text-[#4C3B23] mt-10 mb-4 font-serif"
-                        >
-                          {trimmed.replace("### ", "")}
-                        </h2>
-                      );
-                    }
-                    if (trimmed.startsWith("## ")) {
-                      return (
-                        <h2
-                          key={idx}
-                          className="text-2xl md:text-3xl font-bold text-[#4C3B23] mt-10 mb-4 font-serif"
-                        >
-                          {trimmed.replace("## ", "")}
-                        </h2>
-                      );
-                    }
-                    return (
-                      <p key={idx} className="mb-5">
-                        {paragraph}
-                      </p>
-                    );
-                  })}
-                </article>
-              </div>
-              <div className="mt-4 text-sm text-[#7C6A50] italic text-right">
-                Last updated:{" "}
-                {story.updated_at
-                  ? new Date(story.updated_at).toLocaleDateString()
-                  : "N/A"}
-              </div>
-            </div>
-
-            <aside className="space-y-5">
-              <section className="rounded-2xl border border-[#E5D6BB] bg-white p-5">
-                <h3 className="font-semibold text-[#4C3B23] mb-3 flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-[#B8860B]" />
-                  Timeline extracted
-                </h3>
-                {events.length === 0 ? (
-                  <p className="text-sm text-[#7B6A4B]">No events yet.</p>
-                ) : (
-                  <ul className="space-y-3">
-                    {events.slice(0, 8).map((ev) => (
-                      <li key={ev.id} className="text-sm">
-                        <div className="font-medium text-[#4C3B23]">
-                          {ev.year ?? "—"} · {ev.event || ev.title}
-                        </div>
-                        {ev.description && (
-                          <p className="text-[#7B6A4B] mt-0.5 line-clamp-2">
-                            {ev.description}
-                          </p>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <Link
-                  href={`/timeline/${storyId}`}
-                  className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-[#B8860B] hover:underline"
-                >
-                  Full timeline <ArrowRight className="w-3.5 h-3.5" />
-                </Link>
-              </section>
-
-              <section className="rounded-2xl border border-[#E5D6BB] bg-white p-5">
-                <h3 className="font-semibold text-[#4C3B23] mb-3 flex items-center gap-2">
-                  <Users className="w-4 h-4 text-[#B8860B]" />
-                  Family mentioned
-                </h3>
-                {family.length === 0 ? (
-                  <p className="text-sm text-[#7B6A4B]">No relatives extracted.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {family.map((m, i) => (
-                      <li key={`${m.name}-${i}`} className="text-sm">
-                        <span className="font-medium text-[#4C3B23]">{m.name}</span>
-                        {m.relationship && (
-                          <span className="text-[#7B6A4B]"> · {m.relationship}</span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <Link
-                  href="/family"
-                  className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-[#B8860B] hover:underline"
-                >
-                  Open family tree <ArrowRight className="w-3.5 h-3.5" />
-                </Link>
-              </section>
-
-              {(story.locations?.length || story.occupations?.length) && (
-                <section className="rounded-2xl border border-[#E5D6BB] bg-white p-5 space-y-4">
-                  {!!story.locations?.length && (
-                    <div>
-                      <h3 className="font-semibold text-[#4C3B23] mb-2 flex items-center gap-2">
-                        <MapPin className="w-4 h-4 text-[#B8860B]" /> Places
-                      </h3>
-                      <ul className="text-sm text-[#7B6A4B] space-y-1">
-                        {story.locations.map((l, i) => (
-                          <li key={i}>
-                            {l.place}
-                            {l.purpose ? ` (${l.purpose})` : ""}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {!!story.occupations?.length && (
-                    <div>
-                      <h3 className="font-semibold text-[#4C3B23] mb-2 flex items-center gap-2">
-                        <Briefcase className="w-4 h-4 text-[#B8860B]" /> Work
-                      </h3>
-                      <ul className="text-sm text-[#7B6A4B] space-y-1">
-                        {story.occupations.map((o, i) => (
-                          <li key={i}>
-                            {o.role}
-                            {o.start_year ? ` · ${o.start_year}` : ""}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </section>
-              )}
-
-              {themes.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {themes.map((t) => (
-                    <span
-                      key={t}
-                      className="text-xs px-3 py-1 rounded-full bg-[#FFF1D6] text-[#8B6914] border border-[#F0E0B8]"
-                    >
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </aside>
-          </div>
+        <div className="flex flex-wrap gap-3 mb-10">
+          <Link href={`/timeline/${storyId}`} className="btn-accent">
+            <Calendar size={18} /> View timeline
+          </Link>
+          <Link href="/family" className="btn-ghost">
+            <Users size={18} /> Family tree
+          </Link>
+          <Link href="/record" className="btn-ghost">
+            <Mic size={18} /> Add another
+          </Link>
         </div>
-      </div>
+
+        <div className="grid lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2">
+            <article className="surface-panel rounded-3xl p-8 md:p-10">
+              <div className="font-display text-lg md:text-xl text-ink leading-[1.75] space-y-5">
+                {story.story?.split("\n").map((paragraph, idx) => {
+                  const trimmed = paragraph.trim();
+                  if (!trimmed) return null;
+                  if (trimmed.startsWith("### ") || trimmed.startsWith("## ")) {
+                    return (
+                      <h2
+                        key={idx}
+                        className="font-display text-2xl md:text-3xl text-ink mt-8 mb-2"
+                      >
+                        {trimmed.replace(/^#{2,3}\s+/, "")}
+                      </h2>
+                    );
+                  }
+                  return <p key={idx}>{paragraph}</p>;
+                })}
+              </div>
+            </article>
+            <p className="mt-4 text-xs text-ink-soft text-right">
+              Updated{" "}
+              {story.updated_at
+                ? new Date(story.updated_at).toLocaleDateString()
+                : "—"}
+            </p>
+          </div>
+
+          <aside className="space-y-5">
+            <section className="rounded-2xl border border-line bg-white p-5">
+              <h3 className="font-semibold text-ink mb-3 flex items-center gap-2 text-sm">
+                <Calendar className="w-4 h-4 text-brass" />
+                Timeline
+              </h3>
+              {events.length === 0 ? (
+                <p className="text-sm text-ink-soft">No events yet.</p>
+              ) : (
+                <ul className="space-y-3">
+                  {events.slice(0, 8).map((ev) => (
+                    <li key={ev.id} className="text-sm">
+                      <div className="font-medium text-ink">
+                        {ev.year ?? "—"} · {ev.event || ev.title}
+                      </div>
+                      {ev.description && (
+                        <p className="text-ink-soft mt-0.5 line-clamp-2">
+                          {ev.description}
+                        </p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <Link
+                href={`/timeline/${storyId}`}
+                className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-brass-deep hover:underline"
+              >
+                Full timeline <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </section>
+
+            <section className="rounded-2xl border border-line bg-white p-5">
+              <h3 className="font-semibold text-ink mb-3 flex items-center gap-2 text-sm">
+                <Users className="w-4 h-4 text-brass" />
+                Family mentioned
+              </h3>
+              {family.length === 0 ? (
+                <p className="text-sm text-ink-soft">No relatives extracted.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {family.map((m, i) => (
+                    <li key={`${m.name}-${i}`} className="text-sm">
+                      <span className="font-medium text-ink">{m.name}</span>
+                      {m.relationship && (
+                        <span className="text-ink-soft"> · {m.relationship}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <Link
+                href="/family"
+                className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-brass-deep hover:underline"
+              >
+                Open family tree <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </section>
+
+            {(!!story.locations?.length || !!story.occupations?.length) && (
+              <section className="rounded-2xl border border-line bg-white p-5 space-y-4">
+                {!!story.locations?.length && (
+                  <div>
+                    <h3 className="font-semibold text-ink mb-2 flex items-center gap-2 text-sm">
+                      <MapPin className="w-4 h-4 text-brass" /> Places
+                    </h3>
+                    <ul className="text-sm text-ink-soft space-y-1">
+                      {story.locations.map((l, i) => (
+                        <li key={i}>
+                          {l.place}
+                          {l.purpose ? ` (${l.purpose})` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {!!story.occupations?.length && (
+                  <div>
+                    <h3 className="font-semibold text-ink mb-2 flex items-center gap-2 text-sm">
+                      <Briefcase className="w-4 h-4 text-brass" /> Work
+                    </h3>
+                    <ul className="text-sm text-ink-soft space-y-1">
+                      {story.occupations.map((o, i) => (
+                        <li key={i}>
+                          {o.role}
+                          {o.start_year ? ` · ${o.start_year}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {themes.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {themes.map((t) => (
+                  <span
+                    key={t}
+                    className="text-xs px-3 py-1 rounded-lg bg-stone text-ink-soft border border-line"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
+          </aside>
+        </div>
+      </motion.div>
     </DashboardLayout>
   );
 }

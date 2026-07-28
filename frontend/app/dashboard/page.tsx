@@ -1,115 +1,174 @@
-import { Mic, BookOpen, Users, History, Sparkles, PlusCircle } from "lucide-react";
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { motion } from "framer-motion";
+import { Mic, ArrowUpRight, BookOpen, Users, Layers } from "lucide-react";
 import Sidebar from "../components/DashboardLayout";
+import { useAuth } from "../lib/auth";
+
+type Dash = {
+  vault: { name: string; plan: string; kinship_system?: string };
+  counts: {
+    stories: number;
+    people: number;
+    events: number;
+    artifacts: number;
+    shared_memories: number;
+  };
+  quota: { used?: number; limit?: number | null };
+  recent_stories: Array<{ id: string; title?: string; summary?: string }>;
+  recent_events: Array<{ year?: number; title: string }>;
+};
 
 export default function Dashboard() {
+  const { vaultId, apiRoot, user } = useAuth();
+  const [data, setData] = useState<Dash | null>(null);
+
+  useEffect(() => {
+    const id = vaultId || "00000000-0000-0000-0000-000000000001";
+    fetch(`${apiRoot}/dashboard?vault_id=${id}`)
+      .then((r) => r.json())
+      .then(setData)
+      .catch(() => setData(null));
+  }, [vaultId, apiRoot]);
+
+  const c = data?.counts;
+  const quotaLabel =
+    data?.quota?.limit == null
+      ? `${data?.quota?.used ?? 0} stories`
+      : `${data?.quota?.used ?? 0} of ${data?.quota?.limit} stories`;
+
+  const greeting = user?.display_name || user?.email?.split("@")[0] || "there";
+
   return (
     <Sidebar>
-      <div className="min-h-screen flex bg-[#FFFEFA]">
-        {/* Sidebar */}
-        
-
-        {/* Main Content */}
-        <main className="flex-1 p-10">
-          <h1 className="text-4xl font-bold text-[#6B5B3D] mb-6">
-            Dashboard
-          </h1>
-
-          {/* Main Sections */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {/* Card 1 */}
-            <div className="p-6 bg-white rounded-2xl border border-[#F5E6D3] shadow-sm hover:shadow-xl transition-all">
-              <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-[#D4AF37] to-[#B8860B] flex items-center justify-center mb-4">
-                <Mic className="text-white h-7 w-7" />
-              </div>
-              <h3 className="text-xl font-semibold text-[#6B5B3D] mb-2">
-                Record a New Story
-              </h3>
-              <p className="text-[#6B5B3D]/70 mb-4">
-                Upload or record audio and let VirsaAI transcribe and transform it.
-              </p>
-              <Link href="/record">
-                <button className="px-4 py-2 rounded-lg bg-[#D4AF37] text-white font-medium hover:scale-105 transition">
-                  Start Recording
-                </button>
-              </Link>
-              
-            </div>
-
-            {/* Card 2 */}
-            <div className="p-6 bg-white rounded-2xl border border-[#F5E6D3] shadow-sm hover:shadow-xl transition-all">
-              <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-[#D4AF37] to-[#B8860B] flex items-center justify-center mb-4">
-                <BookOpen className="text-white h-7 w-7" />
-              </div>
-              <h3 className="text-xl font-semibold text-[#6B5B3D] mb-2">
-                Story Library
-              </h3>
-              <p className="text-[#6B5B3D]/70 mb-4">
-                Browse all the biographies and stories you've created.
-              </p>
-              <Link href="/story_library">
-                <button className="px-4 py-2 rounded-lg border border-[#D4AF37] text-[#B8860B] font-medium hover:bg-[#FFF7E2] transition">
-                  View Stories
-                </button>
-              </Link>
-            </div>
-
-            {/* Card 3 */}
-            <div className="p-6 bg-white rounded-2xl border border-[#F5E6D3] shadow-sm hover:shadow-xl transition-all">
-              <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-[#D4AF37] to-[#B8860B] flex items-center justify-center mb-4">
-                <Users className="text-white h-7 w-7" />
-              </div>
-              <h3 className="text-xl font-semibold text-[#6B5B3D] mb-2">
-                Family Tree
-              </h3>
-              <p className="text-[#6B5B3D]/70 mb-4">
-                Explore connections across generations and add new members.
-              </p>
-              <Link href="/family">
-                <button className="px-4 py-2 rounded-lg bg-[#B8860B] text-white font-medium hover:scale-105 transition">
-                  View Tree
-                </button>
-              </Link>
-              
-            </div>
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+      >
+        <div className="flex flex-wrap items-end justify-between gap-6 mb-12">
+          <div>
+            <p className="label-eyebrow mb-3">
+              {data?.vault?.name || "Family vault"}
+              {data?.vault?.plan ? ` · ${data.vault.plan}` : ""}
+            </p>
+            <h1 className="font-display text-4xl md:text-5xl text-ink text-balance">
+              Hello, {greeting}
+            </h1>
+            <p className="text-ink-soft mt-3 max-w-xl leading-relaxed">
+              Your living archive of oral histories, people, and shared memories.
+            </p>
           </div>
+          <Link href="/record" className="btn-accent">
+            <Mic className="w-4 h-4" />
+            Record a story
+          </Link>
+        </div>
 
-          {/* Timeline + Recent */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mt-10">
-            {/* Recent Activity */}
-            <div className="lg:col-span-1 p-6 bg-white rounded-2xl border border-[#F5E6D3] shadow-sm">
-              <h3 className="text-xl font-semibold text-[#6B5B3D] mb-4">
-                Recent Activity
-              </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-10">
+          {[
+            { label: "Stories", value: c?.stories ?? "—", href: "/story_library" },
+            { label: "People", value: c?.people ?? "—", href: "/family" },
+            { label: "Events", value: c?.events ?? "—", href: "/timeline_home" },
+            { label: "Shared", value: c?.shared_memories ?? "—", href: "/memories" },
+          ].map((s) => (
+            <Link
+              key={s.label}
+              href={s.href}
+              className="rounded-2xl border border-line bg-white/80 px-5 py-4 hover:border-brass/50 transition group"
+            >
+              <div className="font-display text-3xl text-ink">{s.value}</div>
+              <div className="text-xs uppercase tracking-wider text-ink-soft mt-1 flex items-center gap-1">
+                {s.label}
+                <ArrowUpRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition" />
+              </div>
+            </Link>
+          ))}
+        </div>
 
-              <ul className="space-y-4 text-[#6B5B3D]/80">
-                <li className="flex items-start gap-3">
-                  <PlusCircle className="h-5 w-5 text-[#B8860B]" />
-                  Added new story from Grandma (Punjabi → English)
-                </li>
-                <li className="flex items-start gap-3">
-                  <PlusCircle className="h-5 w-5 text-[#B8860B]" />
-                  Updated biography “Life in the Village”
-                </li>
-                <li className="flex items-start gap-3">
-                  <PlusCircle className="h-5 w-5 text-[#B8860B]" />
-                  Added new member to family tree
-                </li>
+        <div className="rounded-2xl border border-line bg-stone/50 px-5 py-4 mb-10 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-ink-soft">
+            Plan usage: <span className="text-ink font-medium">{quotaLabel}</span>
+          </p>
+          <Link href="/pricing" className="text-sm font-semibold text-brass-deep hover:underline">
+            View plans
+          </Link>
+        </div>
+
+        <div className="grid lg:grid-cols-5 gap-8">
+          <section className="lg:col-span-3">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display text-2xl text-ink flex items-center gap-2">
+                <BookOpen className="w-5 h-5 text-brass" />
+                Recent stories
+              </h2>
+              <Link href="/story_library" className="text-sm text-brass-deep hover:underline">
+                All stories
+              </Link>
+            </div>
+            {!data?.recent_stories?.length ? (
+              <div className="rounded-2xl border border-dashed border-line p-8 text-center">
+                <p className="text-ink-soft mb-4">No stories yet — start with one memory.</p>
+                <Link href="/record" className="btn-primary">
+                  Record your first story
+                </Link>
+              </div>
+            ) : (
+              <ul className="space-y-3">
+                {data.recent_stories.map((s) => (
+                  <li key={s.id}>
+                    <Link
+                      href={`/story/${s.id}`}
+                      className="block rounded-2xl border border-line bg-white px-5 py-4 hover:border-brass/40 transition"
+                    >
+                      <div className="font-semibold text-ink">{s.title || "Untitled"}</div>
+                      {s.summary && (
+                        <p className="text-sm text-ink-soft mt-1 line-clamp-2 leading-relaxed">
+                          {s.summary}
+                        </p>
+                      )}
+                    </Link>
+                  </li>
+                ))}
               </ul>
+            )}
+          </section>
+
+          <section className="lg:col-span-2 space-y-6">
+            <div>
+              <h2 className="font-display text-2xl text-ink mb-4">Timeline</h2>
+              {!data?.recent_events?.length ? (
+                <p className="text-sm text-ink-soft">
+                  Events appear after you archive a story.
+                </p>
+              ) : (
+                <ul className="space-y-3 border-l border-line pl-4">
+                  {data.recent_events.map((e, i) => (
+                    <li key={i} className="relative">
+                      <span className="absolute -left-[21px] top-1.5 w-2 h-2 rounded-full bg-brass" />
+                      <div className="text-xs font-semibold text-brass-deep tabular-nums">
+                        {e.year ?? "—"}
+                      </div>
+                      <div className="text-sm text-ink mt-0.5">{e.title}</div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
-            {/* Timeline Preview */}
-            <div className="lg:col-span-2 p-6 bg-white rounded-2xl border border-[#F5E6D3] shadow-sm">
-              <h3 className="text-xl font-semibold text-[#6B5B3D] mb-4">
-                Family Timeline Preview
-              </h3>
-              <div className="h-48 bg-[#FFF8E7] border border-[#F5E6D3] rounded-xl flex items-center justify-center text-[#6B5B3D]/60">
-                Timeline Visualization Placeholder
-              </div>
+            <div className="rounded-2xl border border-line bg-white p-5 space-y-3">
+              <Link href="/family" className="flex items-center gap-2 text-sm font-semibold text-ink hover:text-brass-deep">
+                <Users className="w-4 h-4 text-brass" /> Family tree
+              </Link>
+              <Link href="/memories" className="flex items-center gap-2 text-sm font-semibold text-ink hover:text-brass-deep">
+                <Layers className="w-4 h-4 text-brass" /> Shared memories
+              </Link>
             </div>
-          </div>
-        </main>
-      </div>
-      </Sidebar>
-    );
+          </section>
+        </div>
+      </motion.div>
+    </Sidebar>
+  );
 }

@@ -5,9 +5,21 @@ from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+from auth import (
+    PLAN_LIMITS,
+    accept_invite,
+    check_story_quota,
+    create_invite,
+    decode_token,
+    get_user_vaults,
+    login_user,
+    register_user,
+    set_vault_plan,
+    vault_dashboard_stats,
+)
 from db.db_operations import (
     DEFAULT_VAULT_ID,
     add_media_asset,
@@ -59,7 +71,141 @@ app.add_middleware(
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "schema": "v2.1"}
+    return {"status": "ok", "schema": "v2.2", "product": "living-family-history"}
+
+
+def _optional_user(authorization: Optional[str] = Header(None)) -> Optional[dict]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    payload = decode_token(authorization.split(" ", 1)[1].strip())
+    return payload
+
+
+def _require_user(authorization: Optional[str] = Header(None)) -> dict:
+    user = _optional_user(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in required")
+    return user
+
+
+@app.post("/auth/register")
+def auth_register(payload: dict):
+    try:
+        return register_user(
+            email=payload.get("email", ""),
+            password=payload.get("password", ""),
+            display_name=payload.get("display_name"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/auth/login")
+def auth_login(payload: dict):
+    try:
+        return login_user(payload.get("email", ""), payload.get("password", ""))
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.get("/auth/me")
+def auth_me(user: dict = Depends(_require_user)):
+    vaults = get_user_vaults(user["sub"])
+    return {"user": {"id": user["sub"], "email": user.get("email")}, "vaults": vaults}
+
+
+@app.get("/dashboard")
+def dashboard(
+    vault_id: str = Query(DEFAULT_VAULT_ID),
+    user: Optional[dict] = Depends(_optional_user),
+):
+    try:
+        return vault_dashboard_stats(vault_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/plans")
+def plans():
+    return {
+        "plans": [
+            {
+                "id": "free",
+                "name": "Free",
+                "price_monthly": 0,
+                "story_limit": PLAN_LIMITS["free"]["story_limit"],
+                "member_limit": PLAN_LIMITS["free"]["member_limit"],
+                "features": [
+                    "5 archived oral histories",
+                    "Family tree + timelines",
+                    "Cultural kinship labels",
+                    "1 family vault",
+                ],
+            },
+            {
+                "id": "family",
+                "name": "Family",
+                "price_monthly": 19,
+                "story_limit": PLAN_LIMITS["family"]["story_limit"],
+                "member_limit": PLAN_LIMITS["family"]["member_limit"],
+                "features": [
+                    "50 oral histories",
+                    "Shared memories across relatives",
+                    "Artifacts & archive search",
+                    "Invite up to 15 family members",
+                ],
+                "highlighted": True,
+            },
+            {
+                "id": "legacy",
+                "name": "Legacy",
+                "price_monthly": 49,
+                "story_limit": None,
+                "member_limit": None,
+                "features": [
+                    "Unlimited stories & members",
+                    "Priority processing",
+                    "Export / heirloom packages",
+                    "Early access to cultural packs",
+                ],
+            },
+        ],
+        "note": "Stripe checkout hooks ready via vault.stripe_* columns — wire keys to go live.",
+    }
+
+
+@app.post("/billing/set-plan")
+def billing_set_plan(payload: dict, user: dict = Depends(_require_user)):
+    """Dev/staging plan switcher until Stripe Checkout is connected."""
+    vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
+    plan = payload.get("plan") or "free"
+    try:
+        set_vault_plan(vault_id, plan)
+        return vault_dashboard_stats(vault_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/vaults/invite")
+def vault_invite(payload: dict, user: dict = Depends(_require_user)):
+    try:
+        return create_invite(
+            vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+            email=payload.get("email", ""),
+            role=payload.get("role") or "editor",
+            invited_by=user["sub"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/vaults/accept-invite")
+def vault_accept_invite(payload: dict, user: dict = Depends(_require_user)):
+    try:
+        vault_id = accept_invite(payload.get("token", ""), user["sub"])
+        return {"vault_id": vault_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/vault")
@@ -240,6 +386,13 @@ async def upload_story(
     if not os.getenv("GEMINI_KEY"):
         raise HTTPException(status_code=500, detail="GEMINI_KEY is not configured")
 
+    quota = check_story_quota(vault_id)
+    if not quota.get("allowed"):
+        raise HTTPException(
+            status_code=402,
+            detail=quota.get("reason") or "Plan limit reached. Upgrade to continue.",
+        )
+
     story_id = create_story_shell(
         vault_id=vault_id,
         title=title or person_name or (file.filename or "New recording"),
@@ -290,6 +443,13 @@ async def story_from_transcript(
         raise HTTPException(status_code=500, detail="GEMINI_KEY is not configured")
     if not transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript is empty")
+
+    quota = check_story_quota(vault_id)
+    if not quota.get("allowed"):
+        raise HTTPException(
+            status_code=402,
+            detail=quota.get("reason") or "Plan limit reached. Upgrade to continue.",
+        )
 
     story_id = create_story_shell(
         vault_id=vault_id,

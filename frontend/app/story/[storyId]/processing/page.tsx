@@ -2,26 +2,22 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { motion } from "framer-motion";
+import { Loader2, XCircle } from "lucide-react";
 import Sidebar from "../../../components/DashboardLayout";
-
-const API_ROOT =
-  process.env.NEXT_PUBLIC_API_ROOT ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000";
+import { useAuth } from "../../../lib/auth";
 
 const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
-  transcribing: "Transcribing & translating speech",
-  writing: "Writing the family biography",
-  extracting: "Finding timeline events & relatives",
-  saving: "Saving to your family archive",
+  transcribing: "Transcribing speech",
+  writing: "Writing the biography",
+  extracting: "Finding people & events",
+  saving: "Saving to your vault",
   completed: "Complete",
-  failed: "Something went wrong",
+  failed: "Failed",
 };
 
 type Status = {
-  story_id: string;
   status: string;
   stage?: string;
   progress?: number;
@@ -32,15 +28,15 @@ type Status = {
 export default function ProcessingPage() {
   const { storyId } = useParams<{ storyId: string }>();
   const router = useRouter();
+  const { apiRoot } = useAuth();
   const [status, setStatus] = useState<Status | null>(null);
 
   useEffect(() => {
     if (!storyId) return;
     let cancelled = false;
-
     const tick = async () => {
       try {
-        const res = await fetch(`${API_ROOT}/story/${storyId}/status`);
+        const res = await fetch(`${apiRoot}/story/${storyId}/status`);
         if (!res.ok) return;
         const data = (await res.json()) as Status;
         if (cancelled) return;
@@ -52,53 +48,57 @@ export default function ProcessingPage() {
         /* keep polling */
       }
     };
-
     void tick();
     const id = window.setInterval(tick, 2000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [storyId, router]);
+  }, [storyId, router, apiRoot]);
 
   const failed = status?.status === "failed";
   const progress = Math.round((status?.progress || 0) * 100);
   const stage = status?.stage || "queued";
-  const label = STAGE_LABELS[stage] || stage;
 
   return (
     <Sidebar>
-      <div className="min-h-screen bg-[#FFFCF5] flex items-center justify-center px-6">
-        <div className="max-w-lg w-full text-center">
+      <div className="min-h-[70vh] flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="max-w-md w-full text-center"
+        >
           {failed ? (
-            <XCircle className="w-14 h-14 text-red-600 mx-auto mb-5" />
-          ) : status?.status === "ready" ? (
-            <CheckCircle2 className="w-14 h-14 text-emerald-700 mx-auto mb-5" />
+            <XCircle className="w-12 h-12 text-[#9b2c2c] mx-auto mb-5" />
           ) : (
-            <Loader2 className="w-14 h-14 text-[#B8860B] mx-auto mb-5 animate-spin" />
+            <Loader2 className="w-12 h-12 text-brass mx-auto mb-5 animate-spin" />
           )}
 
-          <h1 className="text-3xl font-bold text-[#4C3B23] mb-3">
+          <h1 className="font-display text-3xl md:text-4xl text-ink mb-3">
             {failed ? "We couldn’t finish this story" : "Preserving this memory"}
           </h1>
-          <p className="text-[#6B5B3D]/75 mb-8 leading-relaxed">
+          <p className="text-ink-soft mb-8 leading-relaxed">
             {failed
               ? status?.error_message ||
                 status?.job_error ||
-                "The processing job failed. Try again with a clearer recording."
-              : "VirsaAI is turning spoken words into a written history, timeline, and family connections."}
+                "Try again with a clearer recording or pasted transcript."
+              : "Turning spoken words into a written history, timeline, and family connections."}
           </p>
 
           {!failed && (
             <>
-              <div className="h-2 rounded-full bg-[#F0E4CF] overflow-hidden mb-3">
-                <div
-                  className="h-full bg-[#B8860B] transition-all duration-500"
-                  style={{ width: `${Math.max(progress, 6)}%` }}
+              <div className="h-1.5 rounded-full bg-stone-2 overflow-hidden mb-3">
+                <motion.div
+                  className="h-full bg-brass"
+                  initial={{ width: "4%" }}
+                  animate={{ width: `${Math.max(progress, 6)}%` }}
+                  transition={{ duration: 0.4 }}
                 />
               </div>
-              <p className="text-sm font-medium text-[#8B6914]">{label}</p>
-              <p className="text-xs text-[#6B5B3D]/50 mt-2">{progress}%</p>
+              <p className="text-sm font-medium text-brass-deep">
+                {STAGE_LABELS[stage] || stage}
+              </p>
+              <p className="text-xs text-ink-soft mt-2">{progress}%</p>
             </>
           )}
 
@@ -106,12 +106,12 @@ export default function ProcessingPage() {
             <button
               type="button"
               onClick={() => router.push("/record")}
-              className="mt-6 px-6 py-3 rounded-xl bg-[#4C3B23] text-white font-medium"
+              className="btn-primary mt-4"
             >
               Try again
             </button>
           )}
-        </div>
+        </motion.div>
       </div>
     </Sidebar>
   );

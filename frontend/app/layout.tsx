@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import Providers from "./providers";
 
 export const metadata: Metadata = {
-  title: "VirsaAI - Preserve Your Family History",
-  description: "Transform spoken life stories into beautifully written biographies with interactive timelines and family trees.",
+  title: "Virsa — Living Family History",
+  description:
+    "Record oral histories, archive artifacts, and build a culturally aware family knowledge graph.",
 };
 
 export default function RootLayout({
@@ -13,8 +15,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased font-sans">
-        {children}
+      <body className="antialiased">
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

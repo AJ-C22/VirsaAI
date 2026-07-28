@@ -24,6 +24,7 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import Sidebar from "../components/DashboardLayout";
+import { useAuth } from "../lib/auth";
 
 export type Person = {
   id: string;
@@ -49,15 +50,13 @@ type FamilyGraph = {
   viewpoint_person_id?: string;
 };
 
-const API_ROOT =
-  process.env.NEXT_PUBLIC_API_ROOT ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000";
-
-async function fetchFamilyGraph(viewpoint?: string): Promise<FamilyGraph> {
+async function fetchFamilyGraph(
+  apiRoot: string,
+  viewpoint?: string
+): Promise<FamilyGraph> {
   const url = viewpoint
-    ? `${API_ROOT}/family?viewpoint=${encodeURIComponent(viewpoint)}`
-    : `${API_ROOT}/family`;
+    ? `${apiRoot}/family?viewpoint=${encodeURIComponent(viewpoint)}`
+    : `${apiRoot}/family`;
   const res = await fetch(url);
   if (!res.ok) return { persons: [], relationships: [] };
   const json = await res.json();
@@ -70,11 +69,12 @@ async function fetchFamilyGraph(viewpoint?: string): Promise<FamilyGraph> {
 }
 
 async function persistRelationship(
+  apiRoot: string,
   fromPersonId: string,
   toPersonId: string,
   type = "relative"
 ): Promise<string | null> {
-  const res = await fetch(`${API_ROOT}/family/relationship`, {
+  const res = await fetch(`${apiRoot}/family/relationship`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -88,22 +88,26 @@ async function persistRelationship(
   return json.id ?? null;
 }
 
-async function removeRelationship(relationshipId: string) {
-  await fetch(`${API_ROOT}/family/relationship/${relationshipId}`, {
+async function removeRelationship(apiRoot: string, relationshipId: string) {
+  await fetch(`${apiRoot}/family/relationship/${relationshipId}`, {
     method: "DELETE",
   });
 }
 
 function MemberNode({ data, selected }: NodeProps<Person>) {
   return (
-    <div className="select-none w-[240px] bg-white rounded-xl shadow-md border border-neutral-200 p-4 relative">
+    <div
+      className={`select-none w-[220px] bg-white rounded-2xl border p-4 relative transition ${
+        selected ? "border-brass shadow-md" : "border-line shadow-sm"
+      }`}
+    >
       <Handle
         type="target"
         position={Position.Top}
         style={{
           width: 8,
           height: 8,
-          background: "#c89532",
+          background: "#0d6b5c",
           borderRadius: "50%",
           left: "50%",
           transform: "translateX(-50%)",
@@ -115,31 +119,20 @@ function MemberNode({ data, selected }: NodeProps<Person>) {
         style={{
           width: 8,
           height: 8,
-          background: "#c89532",
+          background: "#0d6b5c",
           borderRadius: "50%",
           left: "50%",
           transform: "translateX(-50%)",
         }}
       />
-      <div className="text-lg font-semibold text-[#7a6321]">{data.name}</div>
-      <div className="text-sm text-[#B8860B] mt-1 font-medium">
+      <div className="font-display text-xl text-ink leading-tight">{data.name}</div>
+      <div className="text-sm text-brass-deep mt-1.5 font-medium">
         {data.kinship_label || data.relationship}
       </div>
-      <div className="text-xs text-neutral-400 mt-2">
+      <div className="text-xs text-ink-soft mt-2 tabular-nums">
         {data.birth_year ?? ""}
         {data.death_year ? ` — ${data.death_year}` : ""}
       </div>
-      {selected && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            borderRadius: 12,
-            boxShadow: "inset 0 0 0 2px rgba(165,128,55,0.12)",
-            pointerEvents: "none",
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -151,9 +144,11 @@ const nodeTypes: NodeTypes = {
 function FamilyTreeCanvas({
   persons,
   relationships,
+  apiRoot,
 }: {
   persons: Person[];
   relationships: Relationship[];
+  apiRoot: string;
 }) {
   const initialNodes: Node[] = useMemo(
     () =>
@@ -162,8 +157,8 @@ function FamilyTreeCanvas({
         type: "memberNode",
         data: p,
         position: {
-          x: 100 + (i % 3) * 300,
-          y: Math.floor(i / 3) * 200,
+          x: 80 + (i % 3) * 280,
+          y: Math.floor(i / 3) * 190,
         },
       })),
     [persons]
@@ -177,7 +172,7 @@ function FamilyTreeCanvas({
         target: r.to_person_id,
         label: r.type,
         type: "straight",
-        style: { stroke: "#b58b2b", strokeWidth: 2 },
+        style: { stroke: "#0d6b5c", strokeWidth: 1.5 },
       })),
     [relationships]
   );
@@ -193,7 +188,12 @@ function FamilyTreeCanvas({
   const onConnect = useCallback(
     async (params: Connection) => {
       if (!params.source || !params.target) return;
-      const id = await persistRelationship(params.source, params.target, "relative");
+      const id = await persistRelationship(
+        apiRoot,
+        params.source,
+        params.target,
+        "relative"
+      );
       if (!id) return;
       setEdges((eds) => [
         ...eds,
@@ -203,11 +203,11 @@ function FamilyTreeCanvas({
           target: params.target!,
           label: "relative",
           type: "straight",
-          style: { stroke: "#b58b2b", strokeWidth: 2 },
+          style: { stroke: "#0d6b5c", strokeWidth: 1.5 },
         },
       ]);
     },
-    [setEdges]
+    [apiRoot, setEdges]
   );
 
   const onKeyDown = useCallback(
@@ -215,12 +215,12 @@ function FamilyTreeCanvas({
       if (e.key !== "Delete" && e.key !== "Backspace") return;
       const selectedEdges = edges.filter((edge) => edge.selected);
       for (const edge of selectedEdges) {
-        void removeRelationship(edge.id);
+        void removeRelationship(apiRoot, edge.id);
       }
       setEdges((eds) => eds.filter((edge) => !edge.selected));
       setNodes((nds) => nds.filter((n) => !n.selected));
     },
-    [edges, setEdges, setNodes]
+    [apiRoot, edges, setEdges, setNodes]
   );
 
   useEffect(() => {
@@ -238,19 +238,24 @@ function FamilyTreeCanvas({
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         fitView
-        fitViewOptions={{ padding: 0.4 }}
+        fitViewOptions={{ padding: 0.35 }}
         connectionLineType={ConnectionLineType.Straight}
         style={{ background: "transparent" }}
       >
-        <MiniMap />
+        <MiniMap
+          maskColor="rgba(12,17,16,0.08)"
+          nodeColor="#0d6b5c"
+          style={{ borderRadius: 12 }}
+        />
         <Controls />
-        <Background gap={16} size={1} />
+        <Background gap={20} size={1} color="#cfd8d4" />
       </ReactFlow>
     </ReactFlowProvider>
   );
 }
 
 export default function Page() {
+  const { apiRoot } = useAuth();
   const [graph, setGraph] = useState<FamilyGraph>({
     persons: [],
     relationships: [],
@@ -259,7 +264,7 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchFamilyGraph(viewpoint || undefined)
+    fetchFamilyGraph(apiRoot, viewpoint || undefined)
       .then((g) => {
         setGraph(g);
         if (!viewpoint && g.viewpoint_person_id) {
@@ -268,50 +273,59 @@ export default function Page() {
       })
       .catch(() => setGraph({ persons: [], relationships: [] }))
       .finally(() => setLoading(false));
-  }, [viewpoint]);
+  }, [apiRoot, viewpoint]);
 
   return (
     <Sidebar>
-      <div className="w-full h-screen p-8 bg-[#faf6ea]">
-        <header className="flex flex-wrap justify-between gap-4 mb-6">
-          <div>
-            <h1 className="text-3xl font-bold text-[#7a6321]">Family Tree</h1>
-            <p className="text-neutral-600">
-              Knowledge graph with culturally aware kinship labels
-              {graph.vault?.kinship_system
-                ? ` (${graph.vault.kinship_system})`
-                : ""}
-              .
-            </p>
-          </div>
-          {graph.persons.length > 0 && (
-            <label className="text-sm text-[#6B5B3D]">
-              Viewpoint
-              <select
-                value={viewpoint}
-                onChange={(e) => setViewpoint(e.target.value)}
-                className="ml-2 rounded-lg border border-[#E8D9C0] bg-white px-3 py-2"
-              >
-                {graph.persons.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-        </header>
+      <div className="flex flex-wrap items-end justify-between gap-4 mb-6">
+        <div>
+          <p className="label-eyebrow mb-2">Connections</p>
+          <h1 className="font-display text-4xl text-ink">Family tree</h1>
+          <p className="text-ink-soft mt-2 max-w-xl">
+            Culturally aware kinship
+            {graph.vault?.kinship_system
+              ? ` · ${graph.vault.kinship_system}`
+              : ""}
+            . Drag to rearrange; connect people to add relationships.
+          </p>
+        </div>
+        {graph.persons.length > 0 && (
+          <label className="text-sm text-ink-soft">
+            Viewpoint
+            <select
+              value={viewpoint}
+              onChange={(e) => setViewpoint(e.target.value)}
+              className="field ml-2 !w-auto !inline-block !py-2"
+            >
+              {graph.persons.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
 
-        <main className="w-full h-[80vh] bg-white rounded-xl p-4 shadow border">
-          {loading ? (
-            <p>Loading…</p>
-          ) : (
-            <FamilyTreeCanvas
-              persons={graph.persons}
-              relationships={graph.relationships}
-            />
-          )}
-        </main>
+      <div className="w-full h-[min(80vh,720px)] rounded-3xl border border-line bg-white overflow-hidden">
+        {loading ? (
+          <p className="p-8 text-ink-soft">Loading tree…</p>
+        ) : graph.persons.length === 0 ? (
+          <div className="h-full flex flex-col items-center justify-center text-center px-6">
+            <p className="text-ink-soft mb-4">
+              People appear here after you archive a story.
+            </p>
+            <a href="/record" className="btn-primary">
+              Record a story
+            </a>
+          </div>
+        ) : (
+          <FamilyTreeCanvas
+            persons={graph.persons}
+            relationships={graph.relationships}
+            apiRoot={apiRoot}
+          />
+        )}
       </div>
     </Sidebar>
   );
