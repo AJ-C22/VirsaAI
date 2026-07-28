@@ -20,9 +20,12 @@ export default function Home() {
             <a href="#how-it-works" className="text-sm font-medium text-[#6B5B3D] hover:text-[#B8860B] transition-colors">
               How It Works
             </a>
-            <button className="px-6 py-2.5 rounded-lg bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-white font-medium hover:shadow-lg hover:scale-105 transition-all duration-200 cursor-pointer">
+            <Link
+              href="/record"
+              className="px-6 py-2.5 rounded-lg bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-white font-medium hover:shadow-lg hover:scale-105 transition-all duration-200 cursor-pointer"
+            >
               Get Started
-            </button>
+            </Link>
           </div>
         </div>
       </nav>
@@ -46,15 +49,17 @@ export default function Home() {
               Upload audio recordings of your family's stories and watch as AI transforms them into beautifully written biographies, interactive timelines, and explorable family trees.
             </p>
             <div className="flex items-center justify-center gap-4">
-              <Link href="/dashboard">
+              <Link href="/record">
                 <button className="px-8 py-4 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-white font-semibold text-lg hover:shadow-2xl hover:scale-105 transition-all duration-200 flex items-center gap-2 cursor-pointer">
-                  Start Preserving Stories
+                  Record a Family Story
                   <ArrowRight className="w-5 h-5" />
                 </button>
               </Link>
-              <button className="px-8 py-4 rounded-xl border-2 border-[#D4AF37] text-[#B8860B] font-semibold text-lg hover:bg-[#FFF8E7] transition-all duration-200 cursor-pointer">
-                Watch Demo
-              </button>
+              <Link href="/story_library">
+                <button className="px-8 py-4 rounded-xl border-2 border-[#D4AF37] text-[#B8860B] font-semibold text-lg hover:bg-[#FFF8E7] transition-all duration-200 cursor-pointer">
+                  Browse Archives
+                </button>
+              </Link>
             </div>
           </div>
 
@@ -175,10 +180,12 @@ export default function Home() {
             <p className="text-xl text-[#6B5B3D]/70 mb-8 max-w-2xl mx-auto">
               Every story matters. Preserve your family's legacy for generations to come.
             </p>
-            <button className="px-10 py-4 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-white font-semibold text-lg hover:shadow-2xl hover:scale-105 transition-all duration-200 flex items-center gap-2 mx-auto cursor-pointer">
-              Get Started Free
-              <ArrowRight className="w-5 h-5" />
-            </button>
+            <Link href="/record">
+              <button className="px-10 py-4 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-white font-semibold text-lg hover:shadow-2xl hover:scale-105 transition-all duration-200 flex items-center gap-2 mx-auto cursor-pointer">
+                Get Started Free
+                <ArrowRight className="w-5 h-5" />
+              </button>
+            </Link>
           </div>
         </div>
       </section>

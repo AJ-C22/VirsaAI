@@ -1,108 +1,422 @@
-from fastapi import FastAPI
+import os
+import threading
+import uuid
+from pathlib import Path
+from typing import List, Optional
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from db.db_operations import *
 
-app = FastAPI()
+from db.db_operations import (
+    DEFAULT_VAULT_ID,
+    add_media_asset,
+    create_artifact,
+    create_family_member_global,
+    create_person,
+    create_processing_job,
+    create_relationship,
+    create_story_shell,
+    delete_family_member,
+    delete_relationship,
+    get_all_people,
+    get_all_stories,
+    get_family_graph,
+    get_master_timeline,
+    get_processing_status,
+    get_story,
+    get_story_full,
+    get_timeline_events,
+    get_vault,
+    link_shared_memories_for_vault,
+    list_artifacts,
+    list_shared_memories,
+    list_suggestions,
+    reject_suggestion,
+    search_archive,
+    set_story_status,
+    update_family_member,
+    update_vault_culture,
+)
+from pipeline import process_transcript_story, process_uploaded_story
 
-# Allow requests from your Next.js frontend
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+app = FastAPI(title="VirsaAI API", version="2.1.0")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # or ["http://localhost:3000"]
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "schema": "v2.1"}
 
-@app.get("/timeline/{story_id}")
-def timeline(story_id: int):
-    """
-    Returns timeline events for a given story_id.
-    """
-    return get_timeline_events(story_id)
 
+@app.get("/vault")
+def vault_get(vault_id: str = Query(DEFAULT_VAULT_ID)):
+    result = get_vault(vault_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Vault not found")
+    return result
+
+
+@app.patch("/vault")
+def vault_update(payload: dict):
+    ok = update_vault_culture(
+        vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+        cultural_context=payload.get("cultural_context"),
+        kinship_system=payload.get("kinship_system"),
+        primary_language=payload.get("primary_language"),
+        name=payload.get("name"),
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update vault")
+    return get_vault(payload.get("vault_id") or DEFAULT_VAULT_ID)
+
+
+@app.get("/archive/search")
+def archive_search(q: str = Query(...), vault_id: str = Query(DEFAULT_VAULT_ID)):
+    return search_archive(q, vault_id)
+
+
+@app.get("/shared-memories")
+def shared_memories(vault_id: str = Query(DEFAULT_VAULT_ID)):
+    return list_shared_memories(vault_id)
+
+
+@app.post("/shared-memories/relink")
+def shared_memories_relink(vault_id: str = Query(DEFAULT_VAULT_ID)):
+    created = link_shared_memories_for_vault(vault_id)
+    return {"created_or_updated_clusters": created, "memories": list_shared_memories(vault_id)}
+
+
+@app.get("/artifacts")
+def artifacts_list(
+    vault_id: str = Query(DEFAULT_VAULT_ID),
+    person_id: Optional[str] = None,
+    artifact_type: Optional[str] = None,
+):
+    return list_artifacts(vault_id, person_id, artifact_type)
+
+
+@app.post("/artifacts/upload")
+async def artifacts_upload(
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    caption: Optional[str] = Form(None),
+    artifact_type: str = Form("photo"),
+    person_id: Optional[str] = Form(None),
+    story_id: Optional[str] = Form(None),
+    taken_year: Optional[int] = Form(None),
+    taken_place: Optional[str] = Form(None),
+    vault_id: str = Form(DEFAULT_VAULT_ID),
+):
+    artifact_dir = UPLOAD_DIR / "artifacts"
+    artifact_dir.mkdir(exist_ok=True)
+    content = await file.read()
+    ext = Path(file.filename or "file.bin").suffix or ".bin"
+    dest = artifact_dir / f"{uuid.uuid4()}{ext}"
+    dest.write_bytes(content)
+    artifact_id = create_artifact(
+        title=title or file.filename or "Family artifact",
+        storage_path=str(dest),
+        artifact_type=artifact_type,
+        vault_id=vault_id,
+        caption=caption,
+        mime_type=file.content_type,
+        byte_size=len(content),
+        person_id=person_id,
+        story_id=story_id,
+        taken_year=taken_year,
+        taken_place=taken_place,
+    )
+    if not artifact_id:
+        raise HTTPException(status_code=500, detail="Failed to save artifact")
+    return {"id": artifact_id, "title": title or file.filename}
+
+
+# ---- Timelines ----
 @app.get("/timeline")
-def list_people():
-    """
-    Returns the list of people with their story/timeline metadata.
-    """
-    return get_all_people()
+def list_people(vault_id: str = Query(DEFAULT_VAULT_ID)):
+    return get_all_people(vault_id)
 
+
+@app.get("/master-timeline")
+def master_timeline(
+    vault_id: str = Query(DEFAULT_VAULT_ID),
+    person_id: Optional[List[str]] = Query(None),
+):
+    return get_master_timeline(vault_id, person_id)
+
+
+@app.get("/timeline/{entity_id}")
+def timeline(entity_id: str):
+    return get_timeline_events(entity_id)
+
+
+# ---- Stories ----
 @app.get("/story_library")
-def list_stories():
-    """
-    Returns the list of people with their story.
-    """
-    return get_all_stories()
+def list_stories(vault_id: str = Query(DEFAULT_VAULT_ID)):
+    return get_all_stories(vault_id)
+
 
 @app.get("/story/{story_id}")
-def story(story_id: int):
-    print("HIT BACKEND WITH:", story_id)
-    return get_story(story_id)
+def story(story_id: str):
+    result = get_story(story_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Story not found")
+    return result
 
+
+@app.get("/story/{story_id}/full")
+def story_full(story_id: str):
+    result = get_story_full(story_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Story not found")
+    return result
+
+
+@app.get("/story/{story_id}/status")
+def story_status(story_id: str):
+    result = get_processing_status(story_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Story not found")
+    return result
+
+
+def _start_audio_job(
+    story_id: str,
+    job_id: str,
+    audio_path: str,
+    person_name: Optional[str],
+    auto_confirm: bool,
+):
+    set_story_status(story_id, "processing")
+    process_uploaded_story(
+        story_id=story_id,
+        job_id=job_id,
+        audio_path=audio_path,
+        person_name_hint=person_name,
+        auto_confirm=auto_confirm,
+    )
+
+
+def _start_transcript_job(
+    story_id: str,
+    job_id: str,
+    transcript: str,
+    person_name: Optional[str],
+    auto_confirm: bool,
+):
+    set_story_status(story_id, "processing")
+    process_transcript_story(
+        story_id=story_id,
+        job_id=job_id,
+        transcript=transcript,
+        person_name_hint=person_name,
+        auto_confirm=auto_confirm,
+    )
+
+
+@app.post("/stories/upload")
+async def upload_story(
+    file: UploadFile = File(...),
+    person_name: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
+    vault_id: str = Form(DEFAULT_VAULT_ID),
+    auto_confirm: bool = Form(True),
+):
+    """Upload oral history audio → async Whisper + Gemini pipeline."""
+    if not os.getenv("GEMINI_KEY"):
+        raise HTTPException(status_code=500, detail="GEMINI_KEY is not configured")
+
+    story_id = create_story_shell(
+        vault_id=vault_id,
+        title=title or person_name or (file.filename or "New recording"),
+    )
+    if not story_id:
+        raise HTTPException(status_code=500, detail="Failed to create story")
+
+    ext = Path(file.filename or "audio.webm").suffix or ".webm"
+    dest = UPLOAD_DIR / f"{story_id}{ext}"
+    content = await file.read()
+    dest.write_bytes(content)
+
+    add_media_asset(
+        story_id=story_id,
+        storage_path=str(dest),
+        mime_type=file.content_type,
+        byte_size=len(content),
+    )
+    job_id = create_processing_job(story_id)
+    if not job_id:
+        raise HTTPException(status_code=500, detail="Failed to create processing job")
+
+    thread = threading.Thread(
+        target=_start_audio_job,
+        args=(story_id, job_id, str(dest), person_name, auto_confirm),
+        daemon=True,
+    )
+    thread.start()
+
+    return {
+        "story_id": story_id,
+        "job_id": job_id,
+        "status": "processing",
+        "message": "Your story is being transcribed and archived.",
+    }
+
+
+@app.post("/stories/from-transcript")
+async def story_from_transcript(
+    transcript: str = Form(...),
+    person_name: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
+    vault_id: str = Form(DEFAULT_VAULT_ID),
+    auto_confirm: bool = Form(True),
+):
+    """Skip Whisper — useful for demos / paste-in oral transcripts."""
+    if not os.getenv("GEMINI_KEY"):
+        raise HTTPException(status_code=500, detail="GEMINI_KEY is not configured")
+    if not transcript.strip():
+        raise HTTPException(status_code=400, detail="Transcript is empty")
+
+    story_id = create_story_shell(
+        vault_id=vault_id,
+        title=title or person_name or "Pasted oral history",
+    )
+    if not story_id:
+        raise HTTPException(status_code=500, detail="Failed to create story")
+
+    job_id = create_processing_job(story_id)
+    if not job_id:
+        raise HTTPException(status_code=500, detail="Failed to create processing job")
+
+    thread = threading.Thread(
+        target=_start_transcript_job,
+        args=(story_id, job_id, transcript.strip(), person_name, auto_confirm),
+        daemon=True,
+    )
+    thread.start()
+
+    return {
+        "story_id": story_id,
+        "job_id": job_id,
+        "status": "processing",
+        "message": "Your transcript is being turned into a biography and family archive.",
+    }
+
+
+# ---- Family tree ----
 @app.get("/family")
-def get_family():
-    return get_all_family_members()
-    '''[
-        {
-            "id": 1,
-            "story_id": 1,
-            "name": "Koolwun Kaur",
-            "relationship": "spouse",
-            "birth_year": None,
-            "death_year": None
-        },
-        {
-            "id": 2,
-            "story_id": 1,
-            "name": "Gurturin Singh's father",
-            "relationship": "father",
-            "birth_year": None,
-            "death_year": None
-        }
-    ]
-    '''
-    
+def get_family(
+    vault_id: str = Query(DEFAULT_VAULT_ID),
+    viewpoint: Optional[str] = Query(None, description="Person id for kinship viewpoint"),
+):
+    return get_family_graph(vault_id, viewpoint_person_id=viewpoint)
+
 
 @app.post("/family/member")
 def create_member(payload: dict):
     member_id = create_family_member_global(
-        name=payload.get("name"),
+        name=payload.get("name") or "Unknown",
         relationship=payload.get("relationship") or "relative",
-        story_id=payload.get("story_id"),  # optional but allowed
+        story_id=payload.get("story_id"),
         birth_year=payload.get("birth_year"),
         death_year=payload.get("death_year"),
-        notes=payload.get("notes")
+        notes=payload.get("notes"),
+        vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+        related_to_person_id=payload.get("related_to_person_id"),
     )
     if not member_id:
         raise HTTPException(status_code=500, detail="Failed to create member")
     return {"id": member_id}
 
+
+@app.post("/family/person")
+def create_person_endpoint(payload: dict):
+    person_id = create_person(
+        name=payload.get("name") or "Unknown",
+        vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+        birth_year=payload.get("birth_year"),
+        death_year=payload.get("death_year"),
+        notes=payload.get("notes"),
+        birth_place=payload.get("birth_place"),
+    )
+    if not person_id:
+        raise HTTPException(status_code=500, detail="Failed to create person")
+    return {"id": person_id}
+
+
 @app.patch("/family/member/{member_id}")
-def update_member(member_id: int, payload: dict):
+def update_member(member_id: str, payload: dict):
     ok = update_family_member(
         member_id=member_id,
         name=payload.get("name"),
         relationship=payload.get("relationship"),
         birth_year=payload.get("birth_year"),
         death_year=payload.get("death_year"),
-        notes=payload.get("notes")
+        notes=payload.get("notes"),
     )
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to update")
     return {"ok": True}
 
+
 @app.delete("/family/member/{member_id}")
-def delete_member(member_id: int):
+def delete_member(member_id: str):
     ok = delete_family_member(member_id)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to delete")
     return {"ok": True}
 
 
-# Optional: A test function you can run manually
-def main():
-    print(get_timeline_events(4))
+@app.post("/family/relationship")
+def add_relationship(payload: dict):
+    rel_id = create_relationship(
+        from_person_id=payload["from_person_id"],
+        to_person_id=payload["to_person_id"],
+        rel_type=payload.get("type") or payload.get("relationship") or "relative",
+        vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+        source_story_id=payload.get("source_story_id"),
+        certainty=float(payload.get("certainty") or 1.0),
+        notes=payload.get("notes"),
+    )
+    if not rel_id:
+        raise HTTPException(status_code=500, detail="Failed to create relationship")
+    return {"id": rel_id}
+
+
+@app.delete("/family/relationship/{relationship_id}")
+def remove_relationship(relationship_id: str):
+    ok = delete_relationship(relationship_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    return {"ok": True}
+
+
+# ---- Suggestions ----
+@app.get("/suggestions")
+def suggestions(
+    story_id: Optional[str] = None,
+    status: str = "pending",
+    vault_id: str = Query(DEFAULT_VAULT_ID),
+):
+    return list_suggestions(story_id=story_id, status=status, vault_id=vault_id)
+
+
+@app.post("/suggestions/{suggestion_id}/reject")
+def suggestion_reject(suggestion_id: str):
+    if not reject_suggestion(suggestion_id):
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    return {"ok": True}
