@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
 
 from auth import (
@@ -15,8 +15,11 @@ from auth import (
     create_invite,
     decode_token,
     get_user_vaults,
+    list_invites,
     login_user,
+    peek_invite,
     register_user,
+    revoke_invite,
     set_vault_plan,
     vault_dashboard_stats,
 )
@@ -47,6 +50,7 @@ from db.db_operations import (
     reject_suggestion,
     search_archive,
     set_story_status,
+    unlink_shared_memory,
     update_family_member,
     update_vault_culture,
 )
@@ -195,8 +199,38 @@ def vault_invite(payload: dict, user: dict = Depends(_require_user)):
             role=payload.get("role") or "editor",
             invited_by=user["sub"],
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/vaults/invites")
+def vault_invites_list(
+    vault_id: str = Query(DEFAULT_VAULT_ID),
+    user: dict = Depends(_require_user),
+):
+    return {"invites": list_invites(vault_id)}
+
+
+@app.post("/vaults/invites/{invite_id}/revoke")
+def vault_invite_revoke(
+    invite_id: str,
+    payload: dict = Body(default={}),
+    user: dict = Depends(_require_user),
+):
+    vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
+    if not revoke_invite(invite_id, vault_id):
+        raise HTTPException(status_code=404, detail="Invite not found or already closed")
+    return {"ok": True}
+
+
+@app.get("/vaults/invite/{token}")
+def vault_invite_peek(token: str):
+    try:
+        return peek_invite(token)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.post("/vaults/accept-invite")
@@ -244,6 +278,13 @@ def shared_memories(vault_id: str = Query(DEFAULT_VAULT_ID)):
 def shared_memories_relink(vault_id: str = Query(DEFAULT_VAULT_ID)):
     created = link_shared_memories_for_vault(vault_id)
     return {"created_or_updated_clusters": created, "memories": list_shared_memories(vault_id)}
+
+
+@app.delete("/shared-memories/{memory_id}")
+def shared_memory_unlink(memory_id: str, vault_id: str = Query(DEFAULT_VAULT_ID)):
+    if not unlink_shared_memory(memory_id, vault_id):
+        raise HTTPException(status_code=404, detail="Shared memory not found")
+    return {"ok": True, "memories": list_shared_memories(vault_id)}
 
 
 @app.get("/artifacts")

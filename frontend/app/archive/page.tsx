@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Search, BookOpen, Users, Calendar, Image, Sparkles } from "lucide-react";
 import Sidebar from "../components/DashboardLayout";
 import { useAuth } from "../lib/auth";
+import { RequireAuth } from "../components/RequireAuth";
 
 type SearchResult = {
   query: string;
@@ -22,7 +23,7 @@ type SearchResult = {
 };
 
 export default function ArchivePage() {
-  const { apiRoot } = useAuth();
+  const { apiRoot, vaultId } = useAuth();
   const [q, setQ] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [loading, setLoading] = useState(false);
@@ -45,8 +46,10 @@ export default function ArchivePage() {
     (async () => {
       setLoading(true);
       try {
+        const params = new URLSearchParams({ q: submitted });
+        if (vaultId) params.set("vault_id", vaultId);
         const res = await fetch(
-          `${apiRoot}/archive/search?q=${encodeURIComponent(submitted)}`
+          `${apiRoot}/archive/search?${params.toString()}`
         );
         const data = await res.json();
         if (!cancelled) setResult(data);
@@ -57,9 +60,10 @@ export default function ArchivePage() {
     return () => {
       cancelled = true;
     };
-  }, [submitted, apiRoot]);
+  }, [submitted, apiRoot, vaultId]);
 
   return (
+    <RequireAuth>
     <Sidebar>
       <p className="label-eyebrow mb-3">Living archive</p>
       <h1 className="font-display text-4xl text-ink mb-3">Search the family vault</h1>
@@ -91,11 +95,20 @@ export default function ArchivePage() {
 
       {loading && <p className="text-ink-soft">Searching…</p>}
 
-      {result && !loading && (
+        {result && !loading && (
         <div className="space-y-8">
           <p className="text-sm text-ink-soft">
             {total} results for “{result.query}”
           </p>
+
+          {total === 0 && (
+            <div className="rounded-2xl border border-dashed border-line p-8 text-center">
+              <p className="text-ink-soft mb-4">Nothing matched that search.</p>
+              <Link href="/record" className="btn-primary">
+                Record a story
+              </Link>
+            </div>
+          )}
 
           <ResultSection icon={<Users className="w-4 h-4" />} title="People" empty={result.persons.length === 0}>
             {result.persons.map((p) => (
@@ -158,6 +171,7 @@ export default function ArchivePage() {
         </div>
       )}
     </Sidebar>
+    </RequireAuth>
   );
 }
 

@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Mic, Square, Upload, Loader2 } from "lucide-react";
 import Sidebar from "../components/DashboardLayout";
 import { useAuth } from "../lib/auth";
+import { RequireAuth } from "../components/RequireAuth";
 
 type Mode = "idle" | "recording" | "uploading";
 
@@ -112,6 +113,7 @@ export default function RecordStoryPage() {
   const busy = mode === "uploading" || mode === "recording";
 
   return (
+    <RequireAuth>
     <Sidebar>
       <motion.div
         initial={{ opacity: 0, y: 8 }}
@@ -269,5 +271,6 @@ export default function RecordStoryPage() {
         </div>
       </motion.div>
     </Sidebar>
+    </RequireAuth>
   );
 }

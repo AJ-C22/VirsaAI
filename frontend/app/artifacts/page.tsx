@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ImagePlus, FileText } from "lucide-react";
 import Sidebar from "../components/DashboardLayout";
 import { useAuth } from "../lib/auth";
+import { RequireAuth } from "../components/RequireAuth";
 
 type Artifact = {
   id: string;
@@ -15,7 +16,7 @@ type Artifact = {
 };
 
 export default function ArtifactsPage() {
-  const { apiRoot } = useAuth();
+  const { apiRoot, vaultId } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<Artifact[]>([]);
   const [title, setTitle] = useState("");
@@ -25,13 +26,14 @@ export default function ArtifactsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
-    const res = await fetch(`${apiRoot}/artifacts`);
+    const q = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+    const res = await fetch(`${apiRoot}/artifacts${q}`);
     setItems(await res.json());
   };
 
   useEffect(() => {
     void load();
-  }, [apiRoot]);
+  }, [apiRoot, vaultId]);
 
   const onUpload = async (file: File) => {
     setUploading(true);
@@ -42,6 +44,7 @@ export default function ArtifactsPage() {
       form.append("title", title || file.name);
       form.append("caption", caption);
       form.append("artifact_type", type);
+      if (vaultId) form.append("vault_id", vaultId);
       const res = await fetch(`${apiRoot}/artifacts/upload`, {
         method: "POST",
         body: form,
@@ -59,6 +62,7 @@ export default function ArtifactsPage() {
   };
 
   return (
+    <RequireAuth>
     <Sidebar>
       <p className="label-eyebrow mb-3">Family artifacts</p>
       <h1 className="font-display text-4xl text-ink mb-3">Photos & documents</h1>
@@ -117,6 +121,13 @@ export default function ArtifactsPage() {
       </div>
 
       <div className="grid sm:grid-cols-2 gap-4">
+        {items.length === 0 && (
+          <div className="sm:col-span-2 rounded-2xl border border-dashed border-line p-10 text-center">
+            <p className="text-ink-soft">
+              No artifacts yet — upload a photo or document above.
+            </p>
+          </div>
+        )}
         {items.map((a) => (
           <div key={a.id} className="rounded-2xl border border-line bg-white p-5">
             <div className="flex items-center gap-2 text-brass mb-2">
@@ -135,5 +146,6 @@ export default function ArtifactsPage() {
         ))}
       </div>
     </Sidebar>
+    </RequireAuth>
   );
 }

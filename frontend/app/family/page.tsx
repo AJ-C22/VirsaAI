@@ -25,6 +25,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import Sidebar from "../components/DashboardLayout";
 import { useAuth } from "../lib/auth";
+import { RequireAuth } from "../components/RequireAuth";
 
 export type Person = {
   id: string;
@@ -52,11 +53,14 @@ type FamilyGraph = {
 
 async function fetchFamilyGraph(
   apiRoot: string,
-  viewpoint?: string
+  viewpoint?: string,
+  vaultId?: string | null
 ): Promise<FamilyGraph> {
-  const url = viewpoint
-    ? `${apiRoot}/family?viewpoint=${encodeURIComponent(viewpoint)}`
-    : `${apiRoot}/family`;
+  const params = new URLSearchParams();
+  if (viewpoint) params.set("viewpoint", viewpoint);
+  if (vaultId) params.set("vault_id", vaultId);
+  const qs = params.toString();
+  const url = `${apiRoot}/family${qs ? `?${qs}` : ""}`;
   const res = await fetch(url);
   if (!res.ok) return { persons: [], relationships: [] };
   const json = await res.json();
@@ -255,7 +259,7 @@ function FamilyTreeCanvas({
 }
 
 export default function Page() {
-  const { apiRoot } = useAuth();
+  const { apiRoot, vaultId } = useAuth();
   const [graph, setGraph] = useState<FamilyGraph>({
     persons: [],
     relationships: [],
@@ -264,7 +268,7 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchFamilyGraph(apiRoot, viewpoint || undefined)
+    fetchFamilyGraph(apiRoot, viewpoint || undefined, vaultId)
       .then((g) => {
         setGraph(g);
         if (!viewpoint && g.viewpoint_person_id) {
@@ -273,9 +277,10 @@ export default function Page() {
       })
       .catch(() => setGraph({ persons: [], relationships: [] }))
       .finally(() => setLoading(false));
-  }, [apiRoot, viewpoint]);
+  }, [apiRoot, vaultId, viewpoint]);
 
   return (
+    <RequireAuth>
     <Sidebar>
       <div className="flex flex-wrap items-end justify-between gap-4 mb-6">
         <div>
@@ -328,5 +333,6 @@ export default function Page() {
         )}
       </div>
     </Sidebar>
+    </RequireAuth>
   );
 }

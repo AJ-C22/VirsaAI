@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Mic, ArrowUpRight, BookOpen, Users, Layers } from "lucide-react";
 import Sidebar from "../components/DashboardLayout";
 import { useAuth } from "../lib/auth";
+import { RequireAuth } from "../components/RequireAuth";
 
 type Dash = {
   vault: { name: string; plan: string; kinship_system?: string };
@@ -42,6 +43,7 @@ export default function Dashboard() {
   const greeting = user?.display_name || user?.email?.split("@")[0] || "there";
 
   return (
+    <RequireAuth>
     <Sidebar>
       <motion.div
         initial={{ opacity: 0, y: 8 }}
@@ -170,5 +172,6 @@ export default function Dashboard() {
         </div>
       </motion.div>
     </Sidebar>
+    </RequireAuth>
   );
 }

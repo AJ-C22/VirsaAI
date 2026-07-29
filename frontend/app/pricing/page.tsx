@@ -57,12 +57,20 @@ export default function PricingPage() {
             Virsa
           </Link>
           <div className="flex gap-5 text-sm items-center">
-            <Link href="/login" className="text-ink-soft hover:text-ink">
-              Sign in
-            </Link>
-            <Link href="/signup" className="btn-primary !py-2.5 !px-4">
-              Start free
-            </Link>
+            {user ? (
+              <Link href="/dashboard" className="btn-primary !py-2.5 !px-4">
+                Open vault
+              </Link>
+            ) : (
+              <>
+                <Link href="/login" className="text-ink-soft hover:text-ink">
+                  Sign in
+                </Link>
+                <Link href="/signup" className="btn-primary !py-2.5 !px-4">
+                  Start free
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </nav>

@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Loader2, XCircle } from "lucide-react";
 import Sidebar from "../../../components/DashboardLayout";
 import { useAuth } from "../../../lib/auth";
+import { RequireAuth } from "../../../components/RequireAuth";
 
 const STAGE_LABELS: Record<string, string> = {
   queued: "Queued",
@@ -61,6 +62,7 @@ export default function ProcessingPage() {
   const stage = status?.stage || "queued";
 
   return (
+    <RequireAuth>
     <Sidebar>
       <div className="min-h-[70vh] flex items-center justify-center">
         <motion.div
@@ -114,5 +116,6 @@ export default function ProcessingPage() {
         </motion.div>
       </div>
     </Sidebar>
+    </RequireAuth>
   );
 }

@@ -814,30 +814,49 @@ def _fetch_places(cur, person_id: str) -> List[Dict]:
     ]
 
 
-def get_timeline_events(story_or_person_id: str) -> List[Dict]:
+def get_timeline_events(story_or_person_id: str) -> Dict:
     """
     Resolve timeline by story id (subject person) OR person id.
+    Returns { person_name, person_id, events }.
     """
+    empty: Dict = {"person_name": None, "person_id": None, "events": []}
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT subject_person_id FROM stories WHERE id = %s",
+                    """
+                    SELECT s.subject_person_id, p.display_name
+                    FROM stories s
+                    LEFT JOIN persons p ON p.id = s.subject_person_id
+                    WHERE s.id = %s
+                    """,
                     (story_or_person_id,),
                 )
                 row = cur.fetchone()
                 if row and row[0]:
-                    return _fetch_timeline_for_person(cur, str(row[0]))
+                    pid = str(row[0])
+                    return {
+                        "person_name": row[1],
+                        "person_id": pid,
+                        "events": _fetch_timeline_for_person(cur, pid),
+                    }
 
                 cur.execute(
-                    "SELECT id FROM persons WHERE id = %s", (story_or_person_id,)
+                    "SELECT id, display_name FROM persons WHERE id = %s",
+                    (story_or_person_id,),
                 )
-                if cur.fetchone():
-                    return _fetch_timeline_for_person(cur, story_or_person_id)
-                return []
+                person = cur.fetchone()
+                if person:
+                    pid = str(person[0])
+                    return {
+                        "person_name": person[1],
+                        "person_id": pid,
+                        "events": _fetch_timeline_for_person(cur, pid),
+                    }
+                return empty
     except Exception as e:
         print(f"Error retrieving timeline events: {e}")
-        return []
+        return empty
 
 
 def get_master_timeline(
@@ -2210,6 +2229,7 @@ def list_shared_memories(vault_id: str = DEFAULT_VAULT_ID) -> List[Dict]:
                 cur.execute(
                     """
                     SELECT sm.id, sm.title, sm.year, sm.place, sm.description, sm.category,
+                           sm.confidence,
                            COUNT(DISTINCT mp.timeline_event_id) AS perspective_count,
                            COUNT(DISTINCT mp.person_id) AS person_count
                     FROM shared_memories sm
@@ -2243,16 +2263,26 @@ def list_shared_memories(vault_id: str = DEFAULT_VAULT_ID) -> List[Dict]:
                         }
                         for pr in cur.fetchall()
                     ]
+                    year, place = r[2], r[3]
+                    rationale_bits = []
+                    if year is not None:
+                        rationale_bits.append(f"year ~{year}")
+                    if place:
+                        rationale_bits.append(f"place “{place}”")
                     memories.append(
                         {
                             "id": mid,
                             "title": r[1],
-                            "year": r[2],
-                            "place": r[3],
+                            "year": year,
+                            "place": place,
                             "description": r[4],
                             "category": r[5],
-                            "perspective_count": r[6],
-                            "person_count": r[7],
+                            "confidence": float(r[6]) if r[6] is not None else None,
+                            "match_rationale": " · ".join(rationale_bits)
+                            if rationale_bits
+                            else "overlapping event details",
+                            "perspective_count": r[7],
+                            "person_count": r[8],
                             "perspectives": perspectives,
                         }
                     )
@@ -2260,3 +2290,47 @@ def list_shared_memories(vault_id: str = DEFAULT_VAULT_ID) -> List[Dict]:
     except Exception as e:
         print("Error list_shared_memories:", e)
         return []
+
+
+def unlink_shared_memory(memory_id: str, vault_id: str = DEFAULT_VAULT_ID) -> bool:
+    """Dissolve a shared-memory cluster; keep underlying timeline events."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id FROM shared_memories
+                    WHERE id = %s AND vault_id = %s
+                    """,
+                    (memory_id, vault_id),
+                )
+                if not cur.fetchone():
+                    return False
+                cur.execute(
+                    """
+                    UPDATE timeline_events
+                    SET shared_memory_id = NULL
+                    WHERE shared_memory_id = %s
+                    """,
+                    (memory_id,),
+                )
+                cur.execute(
+                    """
+                    UPDATE artifacts
+                    SET shared_memory_id = NULL
+                    WHERE shared_memory_id = %s
+                    """,
+                    (memory_id,),
+                )
+                cur.execute(
+                    "DELETE FROM memory_perspectives WHERE shared_memory_id = %s",
+                    (memory_id,),
+                )
+                cur.execute(
+                    "DELETE FROM shared_memories WHERE id = %s AND vault_id = %s",
+                    (memory_id, vault_id),
+                )
+                return cur.rowcount > 0
+    except Exception as e:
+        print("Error unlink_shared_memory:", e)
+        return False

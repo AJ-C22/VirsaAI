@@ -27,6 +27,14 @@ Enforced on story create (`402` when over quota). `/billing/set-plan` switches p
 
 ## Ship checklist
 
+### Product polish (pre-Stripe) — done locally
+- Timeline home + detail restyled; Timelines in nav
+- Auth gate on app routes (`RequireAuth`)
+- Vault invites: create / list / revoke / accept UI + expiry & email match
+- Shared memories: confidence + rationale + unlink; vault-scoped
+- Empty/loading polish; story **Export PDF** (print)
+- Vault-scoped reads across archive / artifacts / library / family / timelines
+
 ### Must-have before paid beta
 1. Set `VIRSA_JWT_SECRET` to a long random value  
 2. Connect **Stripe Checkout** → write `stripe_customer_id` / `subscription_id` / `plan` on vault  
@@ -37,9 +45,9 @@ Enforced on story create (`402` when over quota). `/billing/set-plan` switches p
 7. Enforce vault membership on every write (not just optional Bearer)  
 
 ### Nice-to-have for growth
-- Email invites + accept flow UI  
-- Better shared-memory matching (embeddings)  
-- Export PDF / heirloom book (Legacy upsell)  
+- Email delivery for invites (currently copy-link)
+- Better shared-memory matching (embeddings)
+- Full heirloom book package beyond print/PDF
 - Mobile recording PWA  
 
 ## Local env

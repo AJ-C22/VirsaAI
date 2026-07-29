@@ -11,8 +11,10 @@ import {
   MapPin,
   Briefcase,
   ArrowRight,
+  Printer,
 } from "lucide-react";
 import DashboardLayout from "../../components/DashboardLayout";
+import { RequireAuth } from "../../components/RequireAuth";
 import { useAuth } from "../../lib/auth";
 
 type FullStory = {
@@ -61,17 +63,21 @@ export default function StoryPage() {
 
   if (error) {
     return (
-      <DashboardLayout>
-        <p className="text-[#9b2c2c]">{error}</p>
-      </DashboardLayout>
+      <RequireAuth>
+        <DashboardLayout>
+          <p className="text-[#9b2c2c]">{error}</p>
+        </DashboardLayout>
+      </RequireAuth>
     );
   }
 
   if (!story) {
     return (
-      <DashboardLayout>
-        <p className="text-ink-soft">Loading story…</p>
-      </DashboardLayout>
+      <RequireAuth>
+        <DashboardLayout>
+          <p className="text-ink-soft">Loading story…</p>
+        </DashboardLayout>
+      </RequireAuth>
     );
   }
 
@@ -80,11 +86,13 @@ export default function StoryPage() {
   const events = story.timeline_events || [];
 
   return (
+    <RequireAuth>
     <DashboardLayout>
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4 }}
+        className="print-story"
       >
         <p className="label-eyebrow mb-3">Archived oral history</p>
         <h1 className="font-display text-4xl md:text-5xl text-ink mb-3 text-balance">
@@ -96,7 +104,7 @@ export default function StoryPage() {
           </p>
         )}
 
-        <div className="flex flex-wrap gap-3 mb-10">
+        <div className="flex flex-wrap gap-3 mb-10 no-print">
           <Link href={`/timeline/${storyId}`} className="btn-accent">
             <Calendar size={18} /> View timeline
           </Link>
@@ -106,6 +114,9 @@ export default function StoryPage() {
           <Link href="/record" className="btn-ghost">
             <Mic size={18} /> Add another
           </Link>
+          <button type="button" className="btn-ghost" onClick={() => window.print()}>
+            <Printer size={18} /> Export PDF
+          </button>
         </div>
 
         <div className="grid lg:grid-cols-3 gap-8">
@@ -247,5 +258,6 @@ export default function StoryPage() {
         </div>
       </motion.div>
     </DashboardLayout>
+    </RequireAuth>
   );
 }

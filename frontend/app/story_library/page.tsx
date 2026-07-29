@@ -5,6 +5,7 @@ import Link from "next/link";
 import { BookOpen, Search } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import { useAuth } from "../lib/auth";
+import { RequireAuth } from "../components/RequireAuth";
 
 type StoryRow = {
   story_id: string;
@@ -15,28 +16,34 @@ type StoryRow = {
 };
 
 export default function StoryLibraryPage() {
-  const { apiRoot } = useAuth();
+  const { apiRoot, vaultId } = useAuth();
   const [stories, setStories] = useState<StoryRow[]>([]);
   const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function loadStories() {
+      setLoading(true);
       try {
-        const res = await fetch(`${apiRoot}/story_library`);
+        const q = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
+        const res = await fetch(`${apiRoot}/story_library${q}`);
         const data = await res.json();
         setStories(Array.isArray(data) ? data : []);
       } catch {
         setStories([]);
+      } finally {
+        setLoading(false);
       }
     }
     void loadStories();
-  }, [apiRoot]);
+  }, [apiRoot, vaultId]);
 
   const filtered = stories.filter((s) =>
     (s.person_name || "").toLowerCase().includes(search.toLowerCase())
   );
 
   return (
+    <RequireAuth>
     <DashboardLayout>
       <p className="label-eyebrow mb-3">Archive</p>
       <h1 className="font-display text-4xl text-ink mb-8">Story library</h1>
@@ -51,6 +58,10 @@ export default function StoryLibraryPage() {
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
+
+      {loading ? (
+        <p className="text-ink-soft mb-8">Loading stories…</p>
+      ) : null}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {filtered.map((story) => (
@@ -86,5 +97,6 @@ export default function StoryLibraryPage() {
         </div>
       )}
     </DashboardLayout>
+    </RequireAuth>
   );
 }

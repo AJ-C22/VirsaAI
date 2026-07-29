@@ -1,113 +1,140 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { PlusCircle } from "lucide-react";
-import Sidebar from "../components/DashboardLayout";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { Calendar, Mic, Search } from "lucide-react";
+import Sidebar from "../components/DashboardLayout";
+import { RequireAuth } from "../components/RequireAuth";
+import { useAuth } from "../lib/auth";
 
-export default function TimelinePage() {
-  const [search, setSearch] = useState("");
-  const [people, setPeople] = useState([]);
+type PersonRow = {
+  person_id: string;
+  story_id: string;
+  person_name: string;
+  event_count: number;
+  updated_at?: string;
+};
+
+type SortKey = "recent" | "az" | "za" | "events";
+
+export default function TimelineHomePage() {
+  const { apiRoot, vaultId } = useAuth();
   const router = useRouter();
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortKey>("recent");
+  const [people, setPeople] = useState<PersonRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // --- Fetch people from FastAPI backend ---
   useEffect(() => {
-    async function loadPeople() {
-      try {
-        const res = await fetch("http://localhost:8000/timeline");
-        const data = await res.json();
-        setPeople(data);
-      } catch (err) {
-        console.error("Failed to fetch people:", err);
-      }
+    const id = vaultId || "";
+    const q = id ? `?vault_id=${encodeURIComponent(id)}` : "";
+    setLoading(true);
+    fetch(`${apiRoot}/timeline${q}`)
+      .then((r) => r.json())
+      .then((data) => setPeople(Array.isArray(data) ? data : []))
+      .catch(() => setPeople([]))
+      .finally(() => setLoading(false));
+  }, [apiRoot, vaultId]);
+
+  const filtered = useMemo(() => {
+    let list = people.filter((p) =>
+      (p.person_name || "").toLowerCase().includes(search.toLowerCase())
+    );
+    if (sort === "az") {
+      list = [...list].sort((a, b) => a.person_name.localeCompare(b.person_name));
+    } else if (sort === "za") {
+      list = [...list].sort((a, b) => b.person_name.localeCompare(a.person_name));
+    } else if (sort === "events") {
+      list = [...list].sort((a, b) => (b.event_count || 0) - (a.event_count || 0));
     }
-    loadPeople();
-  }, []);
+    return list;
+  }, [people, search, sort]);
 
   return (
-    <Sidebar>
-      <div className="flex min-h-screen bg-[#FFFCF6]">
-        <main className="flex-1 p-10">
-          <h1 className="text-4xl font-bold text-[#6B5B3D] mb-3">
-            Family Timelines
-          </h1>
-          <p className="text-[#7A6A4F] mb-8">
-            Each family member has one timeline that grows with their stories.
-          </p>
+    <RequireAuth>
+      <Sidebar>
+        <p className="label-eyebrow mb-3">Life events</p>
+        <h1 className="font-display text-4xl text-ink mb-3">Family timelines</h1>
+        <p className="text-ink-soft mb-8 max-w-2xl leading-relaxed">
+          Each relative has one timeline that grows as you archive their stories.
+        </p>
 
-          {/* Search */}
-          <div className="flex items-center gap-4 mb-10">
+        <div className="flex flex-col sm:flex-row gap-3 mb-8">
+          <div className="relative flex-1">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-soft" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search people..."
-              className="flex-1 px-4 py-3 rounded-xl border border-[#F1E0C9] bg-[#FFFAF2]"
+              placeholder="Search people…"
+              className="field !pl-11"
             />
-
-            <select className="px-4 py-3 rounded-xl border border-[#F1E0C9] bg-white text-[#6B5B3D]">
-              <option>Sort by Recent</option>
-              <option>A–Z</option>
-              <option>Z–A</option>
-              <option>Most Stories</option>
-            </select>
           </div>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortKey)}
+            className="field sm:!w-auto"
+          >
+            <option value="recent">Sort by recent</option>
+            <option value="az">A–Z</option>
+            <option value="za">Z–A</option>
+            <option value="events">Most events</option>
+          </select>
+        </div>
 
-          {/* Cards Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-
-            {/* Add New Person */}
-            <div className="p-8 rounded-2xl border-2 border-dashed border-[#E8D8BC] bg-[#FFFAF2] flex flex-col items-center justify-center hover:bg-[#FFF4D8] transition cursor-pointer shadow-sm">
-              <PlusCircle className="h-12 w-12 text-[#B8860B] mb-4" />
-              <p className="text-[#6B5B3D] font-medium">Add New Person</p>
-            </div>
-
-            {/* People Cards */}
-            {people
-              .filter((p: any) =>
-                (p.person_name ?? "")
-                .toLowerCase()
-                .includes(search.toLowerCase())
-              )
-              .map((person: any) => (
-                <div
-                  key={person.story_id}
-                  className="rounded-2xl bg-white border border-[#F1E0C9] shadow-md p-6 hover:shadow-xl hover:-translate-y-1 transition cursor-pointer"
-                >
-                  <div className="flex items-center gap-4 mb-5">
-                    <img
-                      src="/tempUser.png"
-                      className="w-16 h-16 rounded-full object-cover border border-[#EADBC3]"
-                    />
-                    <div>
-                      <h3 className="text-xl font-semibold text-[#6B5B3D]">
-                        {person.person_name}
-                      </h3>
-                      <p className="text-sm text-[#947F63]">
-                        {person.event_count} events • Updated{" "}
-                        {new Date(person.updated_at).toLocaleDateString()}
-                      </p>
-                    </div>
+        {loading ? (
+          <p className="text-ink-soft">Loading timelines…</p>
+        ) : filtered.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-line p-10 text-center">
+            <Calendar className="w-10 h-10 text-brass mx-auto mb-3" />
+            <p className="text-ink font-medium mb-2">No timelines yet</p>
+            <p className="text-sm text-ink-soft mb-5 max-w-md mx-auto">
+              Record an oral history and events will appear here automatically.
+            </p>
+            <Link href="/record" className="btn-primary">
+              <Mic className="w-4 h-4" /> Record a story
+            </Link>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filtered.map((person) => (
+              <button
+                key={person.person_id}
+                type="button"
+                onClick={() =>
+                  router.push(`/timeline/${person.story_id || person.person_id}`)
+                }
+                className="text-left rounded-2xl border border-line bg-white p-5 hover:border-brass/40 transition"
+              >
+                <div className="flex items-start gap-3 mb-4">
+                  <div className="w-11 h-11 rounded-full bg-stone flex items-center justify-center text-brass-deep font-display text-lg shrink-0">
+                    {(person.person_name || "?")[0]}
                   </div>
-
-                  {/* Mini Timeline Preview */}
-                  <div className="w-full h-1 bg-[#F0E6D6] rounded-full mb-6 relative">
-                    <div className="absolute left-1/4 -top-1 w-3 h-3 rounded-full bg-[#D4AF37]" />
-                    <div className="absolute left-1/2 -top-1 w-3 h-3 rounded-full bg-[#D4AF37]" />
-                    <div className="absolute right-1/4 -top-1 w-3 h-3 rounded-full bg-[#D4AF37]" />
+                  <div className="min-w-0">
+                    <h3 className="font-display text-xl text-ink truncate">
+                      {person.person_name}
+                    </h3>
+                    <p className="text-sm text-ink-soft mt-0.5">
+                      {person.event_count} events
+                      {person.updated_at
+                        ? ` · ${new Date(person.updated_at).toLocaleDateString()}`
+                        : ""}
+                    </p>
                   </div>
-
-                  {/* View Timeline Button */}
-                  <button
-                    onClick={() => router.push(`/timeline/${person.story_id}`)}
-                    className="w-full py-3 rounded-xl bg-gradient-to-r from-[#B8860B] to-[#D4AF37] text-white font-medium shadow-md hover:opacity-90 transition"
-                  >
-                    View Timeline
-                  </button>
                 </div>
-              ))}
+                <div className="h-1 rounded-full bg-stone relative mb-4">
+                  <span className="absolute left-1/4 -top-1 w-2.5 h-2.5 rounded-full bg-brass" />
+                  <span className="absolute left-1/2 -top-1 w-2.5 h-2.5 rounded-full bg-brass" />
+                  <span className="absolute right-1/4 -top-1 w-2.5 h-2.5 rounded-full bg-brass" />
+                </div>
+                <span className="text-sm font-semibold text-brass-deep">
+                  View timeline →
+                </span>
+              </button>
+            ))}
           </div>
-        </main>
-      </div>
-    </Sidebar>
+        )}
+      </Sidebar>
+    </RequireAuth>
   );
 }

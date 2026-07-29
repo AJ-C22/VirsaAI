@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../lib/auth";
+import { RequireAuth } from "../components/RequireAuth";
 
 const SYSTEMS = [
   { id: "punjabi", label: "Punjabi", hint: "Chacha, Bhabi, Nani…" },
@@ -40,6 +41,7 @@ export default function OnboardingPage() {
   };
 
   return (
+    <RequireAuth>
     <div className="min-h-screen flex items-center justify-center px-6 py-16">
       <div className="w-full max-w-lg">
         <div className="flex gap-2 mb-8">
@@ -153,5 +155,6 @@ export default function OnboardingPage() {
         </AnimatePresence>
       </div>
     </div>
+    </RequireAuth>
   );
 }

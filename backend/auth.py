@@ -234,16 +234,45 @@ def get_user_vaults(user_id: str) -> list:
 
 
 def create_invite(vault_id: str, email: str, role: str, invited_by: str) -> Dict:
+    email_norm = (email or "").strip().lower()
+    if not email_norm or "@" not in email_norm:
+        raise ValueError("A valid email is required")
+    if role not in ("owner", "editor", "viewer"):
+        role = "editor"
     token = secrets.token_urlsafe(24)
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT member_limit FROM family_vaults WHERE id = %s",
+                (vault_id,),
+            )
+            vault_row = cur.fetchone()
+            if not vault_row:
+                raise ValueError("Vault not found")
+            member_limit = vault_row[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM vault_members WHERE vault_id = %s",
+                (vault_id,),
+            )
+            member_count = cur.fetchone()[0] or 0
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM vault_invites
+                WHERE vault_id = %s AND status = 'pending' AND expires_at > NOW()
+                """,
+                (vault_id,),
+            )
+            pending_count = cur.fetchone()[0] or 0
+            if member_limit is not None and (member_count + pending_count) >= member_limit:
+                raise ValueError("Member limit reached for this plan — upgrade to invite more family")
+
             cur.execute(
                 """
                 INSERT INTO vault_invites (vault_id, email, role, token, invited_by)
                 VALUES (%s, %s, %s::vault_role, %s, %s)
                 RETURNING id, token, expires_at
                 """,
-                (vault_id, email.strip().lower(), role, token, invited_by),
+                (vault_id, email_norm, role, token, invited_by),
             )
             row = cur.fetchone()
             cur.execute(
@@ -251,14 +280,65 @@ def create_invite(vault_id: str, email: str, role: str, invited_by: str) -> Dict
                 INSERT INTO usage_events (vault_id, user_id, event_type, metadata)
                 VALUES (%s, %s, 'invite_sent', %s::jsonb)
                 """,
-                (vault_id, invited_by, f'{{"email": "{email.strip().lower()}"}}'),
+                (vault_id, invited_by, f'{{"email": "{email_norm}"}}'),
             )
     return {
         "id": str(row[0]),
         "token": row[1],
-        "expires_at": row[2],
+        "expires_at": row[2].isoformat() if row[2] else None,
+        "email": email_norm,
         "invite_url": f"/invite/{row[1]}",
     }
+
+
+def list_invites(vault_id: str) -> list:
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE vault_invites
+                SET status = 'expired'
+                WHERE vault_id = %s AND status = 'pending' AND expires_at <= NOW()
+                """,
+                (vault_id,),
+            )
+            cur.execute(
+                """
+                SELECT id, email, role, status, token, expires_at, created_at
+                FROM vault_invites
+                WHERE vault_id = %s
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (vault_id,),
+            )
+            return [
+                {
+                    "id": str(r[0]),
+                    "email": r[1],
+                    "role": r[2],
+                    "status": r[3],
+                    "token": r[4],
+                    "expires_at": r[5].isoformat() if r[5] else None,
+                    "created_at": r[6].isoformat() if r[6] else None,
+                    "invite_url": f"/invite/{r[4]}" if r[3] == "pending" else None,
+                }
+                for r in cur.fetchall()
+            ]
+
+
+def revoke_invite(invite_id: str, vault_id: str) -> bool:
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE vault_invites
+                SET status = 'revoked'
+                WHERE id = %s AND vault_id = %s AND status = 'pending'
+                """,
+                (invite_id, vault_id),
+            )
+            return cur.rowcount > 0
 
 
 def accept_invite(token: str, user_id: str) -> str:
@@ -266,7 +346,7 @@ def accept_invite(token: str, user_id: str) -> str:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, vault_id, role, status, expires_at
+                SELECT id, vault_id, role, status, expires_at, email
                 FROM vault_invites WHERE token = %s
                 """,
                 (token,),
@@ -276,7 +356,38 @@ def accept_invite(token: str, user_id: str) -> str:
                 raise ValueError("Invite not found")
             if row[3] != "pending":
                 raise ValueError("Invite is no longer valid")
+            expires_at = row[4]
+            if expires_at is not None:
+                cur.execute("SELECT NOW()")
+                now = cur.fetchone()[0]
+                if expires_at <= now:
+                    cur.execute(
+                        "UPDATE vault_invites SET status = 'expired' WHERE id = %s",
+                        (row[0],),
+                    )
+                    raise ValueError("Invite has expired")
+            cur.execute("SELECT email FROM profiles WHERE id = %s", (user_id,))
+            profile = cur.fetchone()
+            if not profile:
+                raise ValueError("User not found")
+            if profile[0].strip().lower() != (row[5] or "").strip().lower():
+                raise ValueError(
+                    "Sign in with the invited email address to accept this invite"
+                )
             vault_id = str(row[1])
+            cur.execute(
+                "SELECT member_limit FROM family_vaults WHERE id = %s",
+                (vault_id,),
+            )
+            limit_row = cur.fetchone()
+            member_limit = limit_row[0] if limit_row else None
+            cur.execute(
+                "SELECT COUNT(*) FROM vault_members WHERE vault_id = %s",
+                (vault_id,),
+            )
+            member_count = cur.fetchone()[0] or 0
+            if member_limit is not None and member_count >= member_limit:
+                raise ValueError("This vault has reached its member limit")
             cur.execute(
                 """
                 INSERT INTO vault_members (vault_id, user_id, role)
@@ -292,6 +403,39 @@ def accept_invite(token: str, user_id: str) -> str:
                 (row[0],),
             )
             return vault_id
+
+
+def peek_invite(token: str) -> Dict:
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT vi.email, vi.role, vi.status, vi.expires_at, fv.name
+                FROM vault_invites vi
+                JOIN family_vaults fv ON fv.id = vi.vault_id
+                WHERE vi.token = %s
+                """,
+                (token,),
+            )
+            row = cur.fetchone()
+            now = None
+            if row and row[2] == "pending" and row[3] is not None:
+                cur.execute("SELECT NOW()")
+                now = cur.fetchone()[0]
+    if not row:
+        raise ValueError("Invite not found")
+    status = row[2]
+    expires_at = row[3]
+    if status == "pending" and expires_at is not None and now is not None:
+        if expires_at <= now:
+            status = "expired"
+    return {
+        "email": row[0],
+        "role": row[1],
+        "status": status,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "vault_name": row[4],
+    }
 
 
 def set_vault_plan(vault_id: str, plan: str) -> bool:

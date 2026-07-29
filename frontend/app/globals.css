@@ -161,3 +161,27 @@
     color: var(--accent-deep);
   }
 }
+
+@media print {
+  aside,
+  nav,
+  .no-print,
+  .md\:hidden {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+    background-image: none !important;
+  }
+  main,
+  .print-story {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .print-story article {
+    border: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+  }
+}
