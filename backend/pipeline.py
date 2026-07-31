@@ -19,6 +19,11 @@ from db.db_operations import (
     mark_story_failed,
     update_processing_job,
 )
+from family_extract import (
+    family_extract_prompt,
+    parse_json_response,
+    sanitize_family_members,
+)
 
 _BACKEND_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BACKEND_DIR.parent
@@ -101,7 +106,6 @@ def extract_key_data(transcript, api_key):
 
         Your job is to convert a raw life story transcript into a structured JSON object optimized for:
         - Timeline visualization (chronological events with dates)
-        - Family tree construction (relationships and family members)
         - Data storage and retrieval (key facts and metadata)
 
         CRITICAL RULES:
@@ -110,6 +114,7 @@ def extract_key_data(transcript, api_key):
         - Use null for unknown dates/years, not guesses
         - Keep all text concise and factual
         - All output MUST be valid JSON only (no markdown, no explanations)
+        - Do NOT extract family_members here (handled in a separate strict pass)
 
         Extract the following structured data:
 
@@ -147,15 +152,7 @@ def extract_key_data(transcript, api_key):
              "category": String (e.g., "birth", "immigration", "marriage", "education", "career", "family", "milestone")
            }}
 
-        4. "family_members": People mentioned with their relationships (for family tree).
-           Each person includes:
-           {{
-             "name": String,
-             "relationship": String (e.g., "father", "mother", "spouse", "child", "sibling", "grandparent", "aunt", "uncle", "cousin"),
-             "birth_year": Integer or null,
-             "death_year": Integer or null,
-             "notes": String or null (brief context about this person)
-           }}
+        4. "family_members": []  (always empty — family tree is extracted separately)
 
         5. "locations": Places where the person lived or spent significant time.
            Each location includes:
@@ -195,22 +192,34 @@ def extract_key_data(transcript, api_key):
     print("\nJSON:\n")
     print(response.text)
 
-    try:
-        json_text = response.text.strip()
-        if json_text.startswith("```json"):
-            json_text = json_text[7:]
-        if json_text.startswith("```"):
-            json_text = json_text[3:]
-        if json_text.endswith("```"):
-            json_text = json_text[:-3]
-
-        json_text = json_text.strip()
-        extracted_data = json.loads(json_text)
-        return extracted_data
-    except json.JSONDecodeError as e:
-        print(f"\nError parsing JSON: {e}")
-        print(f"Raw response: {response.text}")
+    extracted_data = parse_json_response(response.text)
+    if not extracted_data:
+        print(f"\nError parsing JSON. Raw response: {response.text}")
         return None
+    return extracted_data
+
+
+def extract_family_tree(
+    transcript: str,
+    api_key: str,
+    storyteller_name: str | None = None,
+) -> list:
+    """Focused Gemini pass for pedigree-safe family members."""
+    print("\nExtracting family tree (strict)…\n")
+    client = genai.Client(api_key=api_key)
+    prompt = family_extract_prompt(transcript, storyteller_name)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+    )
+    print("\nFAMILY JSON:\n")
+    print(response.text)
+    data = parse_json_response(response.text) or {}
+    members = data.get("family_members") or []
+    sanitized = sanitize_family_members(members, transcript, storyteller_name)
+    print("\nFAMILY SANITIZED:\n")
+    print(json.dumps(sanitized, indent=2))
+    return sanitized
 
 
 def _fail_job(story_id: str, job_id: str, error: str) -> None:
@@ -232,10 +241,24 @@ def _run_post_transcript(
     biography = parse_text_gemini(transcript, api_key)
 
     print(f"[pipeline] extracting structured data for story={story_id}")
-    update_processing_job(job_id, stage="extracting", progress=0.7)
+    update_processing_job(job_id, stage="extracting", progress=0.65)
     extracted_data = extract_key_data(transcript, api_key)
     if not extracted_data:
         raise RuntimeError("Failed to extract structured data from transcript")
+
+    # Dedicated family pass — never trust the general extract for tree edges
+    update_processing_job(job_id, stage="extracting", progress=0.78)
+    storyteller = (
+        person_name_hint
+        or (extracted_data.get("person_info") or {}).get("name")
+        or None
+    )
+    try:
+        family = extract_family_tree(transcript, api_key, storyteller)
+    except Exception as fe:
+        print(f"[pipeline] family extract failed, leaving unattached: {fe}")
+        family = []
+    extracted_data["family_members"] = family
 
     summary = extracted_data.get("summary")
 

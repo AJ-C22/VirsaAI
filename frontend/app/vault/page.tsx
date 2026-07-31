@@ -43,13 +43,17 @@ export default function VaultSettingsPage() {
 
   const loadInvites = async () => {
     if (!vid) return;
-    const res = await fetch(
-      `${apiRoot}/vaults/invites?vault_id=${encodeURIComponent(vid)}`,
-      { headers: authHeaders() }
-    );
-    if (!res.ok) return;
-    const data = await res.json();
-    setInvites(data.invites || []);
+    try {
+      const res = await fetch(
+        `${apiRoot}/vaults/invites?vault_id=${encodeURIComponent(vid)}`,
+        { headers: { ...authHeaders() } }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setInvites(data.invites || []);
+    } catch {
+      // Backend unreachable — keep page usable without invite list
+    }
   };
 
   useEffect(() => {
@@ -57,17 +61,31 @@ export default function VaultSettingsPage() {
       setLoadError("No vault selected. Sign in again.");
       return;
     }
-    fetch(`${apiRoot}/vault?vault_id=${encodeURIComponent(vid)}`)
-      .then(async (r) => {
-        if (!r.ok) throw new Error("Vault not found");
-        setVault(await r.json());
-        setLoadError(null);
-      })
-      .catch(() => {
-        setVault(null);
-        setLoadError("Could not load vault settings.");
-      });
-    void loadInvites();
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${apiRoot}/vault?vault_id=${encodeURIComponent(vid)}`
+        );
+        if (!res.ok) throw new Error("Vault not found");
+        const data = await res.json();
+        if (!cancelled) {
+          setVault(data);
+          setLoadError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setVault(null);
+          setLoadError(
+            "Could not load vault settings. Is the API running on port 8000?"
+          );
+        }
+      }
+      if (!cancelled) await loadInvites();
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [apiRoot, vid]);
 
   const save = async () => {

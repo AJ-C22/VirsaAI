@@ -4,43 +4,18 @@ VirsaAI v2 database operations — vault + person-centric model.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .db_connection import get_db_connection
 
 DEFAULT_VAULT_ID = "00000000-0000-0000-0000-000000000001"
 
-_REL_MAP = {
-    "father": "parent",
-    "mother": "parent",
-    "dad": "parent",
-    "mom": "parent",
-    "parent": "parent",
-    "son": "child",
-    "daughter": "child",
-    "child": "child",
-    "spouse": "spouse",
-    "wife": "spouse",
-    "husband": "spouse",
-    "partner": "spouse",
-    "brother": "sibling",
-    "sister": "sibling",
-    "sibling": "sibling",
-    "grandfather": "grandparent",
-    "grandmother": "grandparent",
-    "grandparent": "grandparent",
-    "grandson": "grandchild",
-    "granddaughter": "grandchild",
-    "grandchild": "grandchild",
-    "uncle": "aunt_uncle",
-    "aunt": "aunt_uncle",
-    "nephew": "niece_nephew",
-    "niece": "niece_nephew",
-    "cousin": "cousin",
-    "in-law": "in_law",
-    "in_law": "in_law",
-    "relative": "relative",
-}
+# Pedigree edges drawn on the tree (top-down + marriage).
+TREE_DISPLAY_TYPES = frozenset({"parent", "spouse"})
+# Edges kept for editing + kinship (siblings inferred from shared parents too).
+TREE_STRUCTURAL_TYPES = frozenset({"parent", "child", "spouse", "sibling"})
+
 
 
 def _as_str(value: Any) -> Optional[str]:
@@ -67,16 +42,33 @@ def _loads(value: Any) -> Any:
 
 
 def normalize_relationship_type(label: Optional[str]) -> str:
-    if not label:
-        return "relative"
-    key = label.strip().lower()
-    if key in _REL_MAP:
-        return _REL_MAP[key]
-    # fuzzy contains
-    for token, mapped in _REL_MAP.items():
-        if token in key:
-            return mapped
-    return "other"
+    """
+    Map a free-text kinship label to a structural type.
+
+    Delegates to family_extract.canonicalize_relationship, then to
+    parent/child/spouse/sibling. Uncertain → relative (no auto-edge).
+    """
+    try:
+        from family_extract import canonicalize_relationship
+
+        canon = canonicalize_relationship(label)
+    except Exception:
+        canon = (label or "relative").strip().lower()
+
+    return {
+        "father": "parent",
+        "mother": "parent",
+        "husband": "spouse",
+        "wife": "spouse",
+        "spouse": "spouse",
+        "son": "child",
+        "daughter": "child",
+        "child": "child",
+        "brother": "sibling",
+        "sister": "sibling",
+        "sibling": "sibling",
+        "parent": "parent",
+    }.get(canon, "relative")
 
 
 def ensure_default_vault(cur) -> str:
@@ -91,6 +83,29 @@ def ensure_default_vault(cur) -> str:
     )
     row = cur.fetchone()
     return row[0] if row else DEFAULT_VAULT_ID
+
+
+def insert_person(
+    cur,
+    vault_id: str,
+    display_name: str,
+    birth_year: Optional[int] = None,
+    death_year: Optional[int] = None,
+    birth_place: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> str:
+    """Always insert a new person row (manual tree edits)."""
+    name = (display_name or "Unknown").strip()
+    cur.execute(
+        """
+        INSERT INTO persons (
+            vault_id, display_name, birth_year, death_year, birth_place, notes
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (vault_id, name, birth_year, death_year, birth_place, notes),
+    )
+    return str(cur.fetchone()[0])
 
 
 def get_or_create_person_by_name(
@@ -116,16 +131,9 @@ def get_or_create_person_by_name(
     if row:
         return str(row[0])
 
-    cur.execute(
-        """
-        INSERT INTO persons (
-            vault_id, display_name, birth_year, death_year, birth_place, notes
-        ) VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id
-        """,
-        (vault_id, name, birth_year, death_year, birth_place, notes),
+    return insert_person(
+        cur, vault_id, name, birth_year, death_year, birth_place, notes
     )
-    return str(cur.fetchone()[0])
 
 
 def _insert_relationship(
@@ -168,6 +176,50 @@ def _edge_for_label(
     if rel_type in ("child", "grandchild", "niece_nephew"):
         return subject_id, other_id, rel_type
     return subject_id, other_id, rel_type
+
+
+def _tree_edge_for_label(
+    subject_id: str, other_id: str, label: str
+) -> Optional[Tuple[str, str, str]]:
+    """
+    Pedigree-only edge for the family tree.
+
+    Only father/mother/spouse/child/sibling (etc.) create an edge.
+    Uncertain labels return None — person stays on the canvas unattached.
+    Multiple spouses are allowed (one spouse edge per pair).
+    """
+    rel_type = normalize_relationship_type(label)
+    if rel_type == "parent":
+        return other_id, subject_id, "parent"
+    if rel_type == "child":
+        return subject_id, other_id, "parent"
+    if rel_type == "spouse":
+        # Stable endpoint order so remarriage pairs don't duplicate oddly
+        a, b = sorted([subject_id, other_id])
+        return a, b, "spouse"
+    if rel_type == "sibling":
+        a, b = sorted([subject_id, other_id])
+        return a, b, "sibling"
+    return None
+
+
+def _structural_edges_for_kinship(
+    relationships: List[Dict[str, Any]],
+) -> List[Tuple[str, str, str]]:
+    """Normalize DB rows into parent/spouse/sibling edges for kinship.py."""
+    out: List[Tuple[str, str, str]] = []
+    for r in relationships:
+        t = (r.get("type") or "").lower()
+        frm, to = r["from_person_id"], r["to_person_id"]
+        if t == "parent":
+            out.append((frm, to, "parent"))
+        elif t == "child":
+            # Flip to canonical parent edge
+            out.append((to, frm, "parent"))
+        elif t in ("spouse", "sibling"):
+            out.append((frm, to, t))
+        # Ignore aunt_uncle / cousin / relative / etc.
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -328,23 +380,27 @@ def save_complete_story(
                         ),
                     )
 
-                # Family members → persons + relationships
+                # Family members → persons + pedigree edges only (parent/spouse/sibling)
                 for member in (extracted_data or {}).get("family_members") or []:
                     m_name = member.get("name") or "Unknown relative"
+                    raw_rel = member.get("relationship") or "relative"
+                    note_bits = [member.get("notes") or "", f"Mentioned as: {raw_rel}"]
+                    notes = " · ".join(b for b in note_bits if b).strip(" ·")
                     other_id = get_or_create_person_by_name(
                         cur,
                         vault_id,
                         m_name,
                         birth_year=member.get("birth_year"),
                         death_year=member.get("death_year"),
-                        notes=member.get("notes"),
+                        notes=notes or None,
                     )
-                    frm, to, rel_type = _edge_for_label(
-                        subject_id, other_id, member.get("relationship") or "relative"
-                    )
-                    rel_id = _insert_relationship(
-                        cur, vault_id, frm, to, rel_type, story_id, certainty=0.75
-                    )
+                    tree_edge = _tree_edge_for_label(subject_id, other_id, raw_rel)
+                    rel_id = None
+                    if tree_edge:
+                        frm, to, rel_type = tree_edge
+                        rel_id = _insert_relationship(
+                            cur, vault_id, frm, to, rel_type, story_id, certainty=0.75
+                        )
                     cur.execute(
                         """
                         INSERT INTO ai_suggestions (
@@ -637,15 +693,225 @@ def get_all_stories_limited(limit: int = 100, vault_id: str = DEFAULT_VAULT_ID) 
         return []
 
 
-def delete_story(story_id: str) -> bool:
+def delete_story(story_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Fully remove a story and data that was created from it.
+
+    - Timeline events, places, occupations with source_story_id
+    - Tree relationships that were auto-linked from this story
+    - AI suggestions, media assets, processing jobs, story themes
+    - Artifacts / memory perspectives tied to the story
+    - Orphan persons who only existed because of this story
+      (no remaining stories, edges, events, places, occupations, artifacts)
+    - Local upload files named {story_id}*
+    """
+    from pathlib import Path
+
+    counts: Dict[str, int] = {
+        "timeline_events": 0,
+        "relationships": 0,
+        "places": 0,
+        "occupations": 0,
+        "ai_suggestions": 0,
+        "media_assets": 0,
+        "processing_jobs": 0,
+        "story_themes": 0,
+        "artifacts": 0,
+        "memory_perspectives": 0,
+        "persons": 0,
+        "upload_files": 0,
+    }
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, vault_id, subject_person_id
+                    FROM stories WHERE id = %s
+                    """,
+                    (story_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                vault_id = str(row[1])
+                subject_id = _as_str(row[2])
+
+                candidate_persons: set[str] = set()
+                if subject_id:
+                    candidate_persons.add(subject_id)
+
+                # People touched by this story's graph / extract
+                cur.execute(
+                    """
+                    SELECT from_person_id, to_person_id
+                    FROM relationships WHERE source_story_id = %s
+                    """,
+                    (story_id,),
+                )
+                for frm, to in cur.fetchall() or []:
+                    if frm:
+                        candidate_persons.add(str(frm))
+                    if to:
+                        candidate_persons.add(str(to))
+
+                cur.execute(
+                    """
+                    SELECT person_id FROM timeline_events
+                    WHERE source_story_id = %s AND person_id IS NOT NULL
+                    """,
+                    (story_id,),
+                )
+                for (pid,) in cur.fetchall() or []:
+                    candidate_persons.add(str(pid))
+
+                cur.execute(
+                    """
+                    SELECT resolved_entity_id, payload
+                    FROM ai_suggestions WHERE story_id = %s
+                    """,
+                    (story_id,),
+                )
+                for resolved, payload in cur.fetchall() or []:
+                    if resolved:
+                        candidate_persons.add(str(resolved))
+                    data = _loads(payload) or {}
+                    if isinstance(data, dict) and data.get("person_id"):
+                        candidate_persons.add(str(data["person_id"]))
+
+                def _del(sql: str, key: str) -> None:
+                    cur.execute(sql, (story_id,))
+                    counts[key] = cur.rowcount
+
+                # Collect media paths before wiping rows
+                cur.execute(
+                    "SELECT storage_path FROM media_assets WHERE story_id = %s",
+                    (story_id,),
+                )
+                media_paths = [r[0] for r in (cur.fetchall() or []) if r[0]]
+                cur.execute(
+                    "SELECT storage_path FROM artifacts WHERE story_id = %s",
+                    (story_id,),
+                )
+                media_paths += [r[0] for r in (cur.fetchall() or []) if r[0]]
+
+                # Child rows that would otherwise SET NULL and leave orphans
+                _del(
+                    "DELETE FROM memory_perspectives WHERE story_id = %s",
+                    "memory_perspectives",
+                )
+                _del(
+                    "DELETE FROM timeline_events WHERE source_story_id = %s",
+                    "timeline_events",
+                )
+                _del(
+                    "DELETE FROM relationships WHERE source_story_id = %s",
+                    "relationships",
+                )
+                _del(
+                    "DELETE FROM places WHERE source_story_id = %s",
+                    "places",
+                )
+                _del(
+                    "DELETE FROM occupations WHERE source_story_id = %s",
+                    "occupations",
+                )
+                _del(
+                    "DELETE FROM ai_suggestions WHERE story_id = %s",
+                    "ai_suggestions",
+                )
+                _del(
+                    "DELETE FROM media_assets WHERE story_id = %s",
+                    "media_assets",
+                )
+                _del(
+                    "DELETE FROM processing_jobs WHERE story_id = %s",
+                    "processing_jobs",
+                )
+                _del(
+                    "DELETE FROM story_themes WHERE story_id = %s",
+                    "story_themes",
+                )
+                _del(
+                    "DELETE FROM artifacts WHERE story_id = %s",
+                    "artifacts",
+                )
+
+                # Drop empty shared memories that lost all perspectives
+                cur.execute(
+                    """
+                    DELETE FROM shared_memories sm
+                    WHERE sm.vault_id = %s
+                      AND NOT EXISTS (
+                        SELECT 1 FROM memory_perspectives mp
+                        WHERE mp.shared_memory_id = sm.id
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM timeline_events te
+                        WHERE te.shared_memory_id = sm.id
+                      )
+                    """,
+                    (vault_id,),
+                )
+
                 cur.execute("DELETE FROM stories WHERE id = %s", (story_id,))
-                return cur.rowcount > 0
+                if cur.rowcount == 0:
+                    return None
+
+                # Remove persons that only existed for this story
+                removed_people = 0
+                for pid in candidate_persons:
+                    cur.execute(
+                        """
+                        SELECT
+                          EXISTS(SELECT 1 FROM stories WHERE subject_person_id = %s),
+                          EXISTS(
+                            SELECT 1 FROM relationships
+                            WHERE from_person_id = %s OR to_person_id = %s
+                          ),
+                          EXISTS(SELECT 1 FROM timeline_events WHERE person_id = %s),
+                          EXISTS(SELECT 1 FROM places WHERE person_id = %s),
+                          EXISTS(SELECT 1 FROM occupations WHERE person_id = %s),
+                          EXISTS(SELECT 1 FROM artifacts WHERE person_id = %s)
+                        """,
+                        (pid, pid, pid, pid, pid, pid, pid),
+                    )
+                    flags = cur.fetchone()
+                    if flags and not any(flags):
+                        cur.execute(
+                            "DELETE FROM persons WHERE id = %s AND vault_id = %s",
+                            (pid, vault_id),
+                        )
+                        removed_people += cur.rowcount
+                counts["persons"] = removed_people
+
+        # Local audio / upload files (outside DB txn is fine)
+        upload_dir = Path(__file__).resolve().parent.parent / "uploads"
+        if upload_dir.is_dir():
+            for path in upload_dir.glob(f"{story_id}*"):
+                try:
+                    path.unlink()
+                    counts["upload_files"] += 1
+                except OSError as oe:
+                    print(f"Could not delete upload {path}: {oe}")
+        for storage_path in media_paths:
+            try:
+                p = Path(storage_path)
+                if not p.is_absolute():
+                    p = upload_dir / p
+                if p.exists() and p.is_file():
+                    p.unlink()
+                    counts["upload_files"] += 1
+            except OSError as oe:
+                print(f"Could not delete media {storage_path}: {oe}")
+
+        return {"id": story_id, "deleted": counts}
     except Exception as e:
         print(f"Error deleting story: {e}")
-        return False
+        import traceback
+
+        traceback.print_exc()
+        return None
 
 
 def update_story(
@@ -982,16 +1248,13 @@ def get_family_graph(
                     for r in cur.fetchall()
                 ]
 
-        # Cultural kinship labels from viewpoint (default: first person or subject)
+        # Cultural kinship labels from sparse pedigree (parent/spouse/sibling)
         ego = viewpoint_person_id or (persons[0]["id"] if persons else None)
         if ego:
             try:
                 from kinship import label_all_relatives
 
-                edges = [
-                    (r["from_person_id"], r["to_person_id"], r["type"])
-                    for r in relationships
-                ]
+                edges = _structural_edges_for_kinship(relationships)
                 sex_by_id = {
                     p["id"]: (p["sex"] or "").lower() or None
                     for p in persons
@@ -1021,6 +1284,23 @@ def get_family_graph(
             except Exception as ke:
                 print("Kinship labeling skipped:", ke)
 
+        # Only return pedigree edges (parent / spouse / sibling). Canvas draws
+        # parent+spouse; edit UI can still change sibling links.
+        display_relationships = []
+        for r in relationships:
+            t = (r.get("type") or "").lower()
+            if t == "child":
+                display_relationships.append(
+                    {
+                        **r,
+                        "from_person_id": r["to_person_id"],
+                        "to_person_id": r["from_person_id"],
+                        "type": "parent",
+                    }
+                )
+            elif t in TREE_STRUCTURAL_TYPES:
+                display_relationships.append(r)
+
         return {
             "vault": {
                 "id": vault_id,
@@ -1030,7 +1310,7 @@ def get_family_graph(
             },
             "viewpoint_person_id": ego,
             "persons": persons,
-            "relationships": relationships,
+            "relationships": display_relationships,
             "members": persons,
         }
     except Exception as e:
@@ -1056,11 +1336,17 @@ def create_person(
     death_year: Optional[int] = None,
     notes: Optional[str] = None,
     birth_place: Optional[str] = None,
+    *,
+    force_new: bool = True,
 ) -> Optional[str]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 ensure_default_vault(cur)
+                if force_new:
+                    return insert_person(
+                        cur, vault_id, name, birth_year, death_year, birth_place, notes
+                    )
                 return get_or_create_person_by_name(
                     cur, vault_id, name, birth_year, death_year, birth_place, notes
                 )
@@ -1078,18 +1364,28 @@ def create_family_member_global(
     notes: Optional[str] = None,
     vault_id: str = DEFAULT_VAULT_ID,
     related_to_person_id: Optional[str] = None,
+    *,
+    force_new: bool = True,
 ) -> Optional[str]:
     """
     Create a person and optionally link them to a subject
     (story subject or related_to_person_id).
+
+    Manual UI passes force_new=True so two people can share a name.
+    AI ingest should call get_or_create_person_by_name instead.
     """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 ensure_default_vault(cur)
-                person_id = get_or_create_person_by_name(
-                    cur, vault_id, name, birth_year, death_year, notes=notes
-                )
+                if force_new:
+                    person_id = insert_person(
+                        cur, vault_id, name, birth_year, death_year, notes=notes
+                    )
+                else:
+                    person_id = get_or_create_person_by_name(
+                        cur, vault_id, name, birth_year, death_year, notes=notes
+                    )
                 subject_id = related_to_person_id
                 if not subject_id and story_id:
                     cur.execute(
@@ -1099,12 +1395,14 @@ def create_family_member_global(
                     row = cur.fetchone()
                     subject_id = str(row[0]) if row and row[0] else None
                 if subject_id:
-                    frm, to, rel_type = _edge_for_label(
+                    tree_edge = _tree_edge_for_label(
                         subject_id, person_id, relationship
                     )
-                    _insert_relationship(
-                        cur, vault_id, frm, to, rel_type, story_id, certainty=1.0
-                    )
+                    if tree_edge:
+                        frm, to, rel_type = tree_edge
+                        _insert_relationship(
+                            cur, vault_id, frm, to, rel_type, story_id, certainty=1.0
+                        )
                 return person_id
     except Exception as e:
         print("Error create_family_member_global:", e)
@@ -1118,6 +1416,9 @@ def update_person(
     death_year: Optional[int] = None,
     notes: Optional[str] = None,
     birth_place: Optional[str] = None,
+    *,
+    set_birth_year: bool = False,
+    set_death_year: bool = False,
 ) -> bool:
     try:
         updates = []
@@ -1125,10 +1426,16 @@ def update_person(
         if name is not None:
             updates.append("display_name = %s")
             vals.append(name)
-        if birth_year is not None:
+        if set_birth_year:
             updates.append("birth_year = %s")
             vals.append(birth_year)
-        if death_year is not None:
+        elif birth_year is not None:
+            updates.append("birth_year = %s")
+            vals.append(birth_year)
+        if set_death_year:
+            updates.append("death_year = %s")
+            vals.append(death_year)
+        elif death_year is not None:
             updates.append("death_year = %s")
             vals.append(death_year)
         if notes is not None:
@@ -1139,6 +1446,7 @@ def update_person(
             vals.append(birth_place)
         if not updates:
             return False
+        updates.append("updated_at = NOW()")
         vals.append(person_id)
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -1160,9 +1468,20 @@ def update_family_member(
     birth_year: Optional[int] = None,
     death_year: Optional[int] = None,
     notes: Optional[str] = None,
+    *,
+    set_birth_year: bool = False,
+    set_death_year: bool = False,
 ) -> bool:
     # relationship string updates are ignored here; use create_relationship
-    return update_person(member_id, name, birth_year, death_year, notes)
+    return update_person(
+        member_id,
+        name,
+        birth_year,
+        death_year,
+        notes,
+        set_birth_year=set_birth_year,
+        set_death_year=set_death_year,
+    )
 
 
 def delete_person(person_id: str) -> bool:
@@ -1189,16 +1508,44 @@ def create_relationship(
     certainty: float = 1.0,
     notes: Optional[str] = None,
 ) -> Optional[str]:
+    """
+    Create a pedigree edge. Prefer parent/spouse/sibling.
+    'child' is stored as a reversed parent edge for a clean top-down tree.
+    Uncertain types (relative, aunt, …) create nothing — leave unattached.
+    """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 ensure_default_vault(cur)
+                normalized = normalize_relationship_type(rel_type)
+                # UI may send structural types directly
+                if (rel_type or "").strip().lower() in (
+                    "parent",
+                    "child",
+                    "spouse",
+                    "sibling",
+                ):
+                    normalized = (rel_type or "").strip().lower()
+
+                if normalized == "child":
+                    frm, to, stored = to_person_id, from_person_id, "parent"
+                elif normalized == "parent":
+                    frm, to, stored = from_person_id, to_person_id, "parent"
+                elif normalized == "spouse":
+                    frm, to = sorted([from_person_id, to_person_id])
+                    stored = "spouse"
+                elif normalized == "sibling":
+                    frm, to = sorted([from_person_id, to_person_id])
+                    stored = "sibling"
+                else:
+                    # Uncertain — leave person unattached
+                    return None
                 rel_id = _insert_relationship(
                     cur,
                     vault_id,
-                    from_person_id,
-                    to_person_id,
-                    normalize_relationship_type(rel_type),
+                    frm,
+                    to,
+                    stored,
                     source_story_id,
                     certainty,
                 )
@@ -1211,6 +1558,88 @@ def create_relationship(
     except Exception as e:
         print("Error create_relationship:", e)
         return None
+
+
+def update_relationship(
+    relationship_id: str,
+    rel_type: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> bool:
+    """
+    Change an existing link. Setting type to relative/unattached deletes it.
+    'child' flips endpoints and stores parent.
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT from_person_id, to_person_id, type
+                    FROM relationships WHERE id = %s
+                    """,
+                    (relationship_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False
+                frm, to, current = str(row[0]), str(row[1]), row[2]
+
+                if rel_type is not None:
+                    raw = (rel_type or "").strip().lower()
+                    if raw in ("relative", "unattached", "none", "", "other"):
+                        cur.execute(
+                            "DELETE FROM relationships WHERE id = %s",
+                            (relationship_id,),
+                        )
+                        return cur.rowcount > 0
+
+                    if raw in ("parent", "child", "spouse", "sibling"):
+                        normalized = raw
+                    else:
+                        normalized = normalize_relationship_type(rel_type)
+
+                    if normalized == "child":
+                        new_frm, new_to, stored = to, frm, "parent"
+                    elif normalized == "parent":
+                        new_frm, new_to, stored = frm, to, "parent"
+                        # If current was parent but user meant the other direction,
+                        # keep endpoints as-is (they edit via "Parent of" semantics
+                        # from the edge's existing from→to).
+                    elif normalized == "spouse":
+                        new_frm, new_to = sorted([frm, to])
+                        stored = "spouse"
+                    elif normalized == "sibling":
+                        new_frm, new_to = sorted([frm, to])
+                        stored = "sibling"
+                    else:
+                        # Uncertain → detach
+                        cur.execute(
+                            "DELETE FROM relationships WHERE id = %s",
+                            (relationship_id,),
+                        )
+                        return cur.rowcount > 0
+
+                    cur.execute(
+                        """
+                        UPDATE relationships
+                        SET from_person_id = %s, to_person_id = %s,
+                            type = %s::relationship_type
+                        WHERE id = %s
+                        """,
+                        (new_frm, new_to, stored, relationship_id),
+                    )
+                    if cur.rowcount == 0:
+                        return False
+
+                if notes is not None:
+                    cur.execute(
+                        "UPDATE relationships SET notes = %s WHERE id = %s",
+                        (notes, relationship_id),
+                    )
+                return True
+    except Exception as e:
+        print("Error update_relationship:", e)
+        return False
 
 
 def delete_relationship(relationship_id: str) -> bool:
@@ -1525,21 +1954,36 @@ def _apply_extracted_to_graph(
         )
 
     for member in (extracted_data or {}).get("family_members") or []:
-        m_name = member.get("name") or "Unknown relative"
+        m_name = (member.get("name") or "").strip() or "Unknown relative"
+        raw_rel = member.get("relationship") or "relative"
+        # Never auto-link uncertain rows
+        if str(member.get("confidence") or "").lower() == "low":
+            raw_rel = "relative"
+        if str(raw_rel).strip().lower() in ("relative", "other", "unknown", ""):
+            raw_rel = "relative"
+        note_bits = [member.get("notes") or ""]
+        if member.get("evidence"):
+            note_bits.append(f"Evidence: {member.get('evidence')}")
+        if raw_rel == "relative" and member.get("relationship"):
+            note_bits.append(f"Mentioned as: {member.get('relationship')}")
+        notes = " · ".join(b for b in note_bits if b).strip(" ·")
         other_id = get_or_create_person_by_name(
             cur,
             vault_id,
             m_name,
             birth_year=member.get("birth_year"),
             death_year=member.get("death_year"),
-            notes=member.get("notes"),
+            notes=notes or None,
         )
-        frm, to, rel_type = _edge_for_label(
-            subject_id, other_id, member.get("relationship") or "relative"
-        )
-        rel_id = _insert_relationship(
-            cur, vault_id, frm, to, rel_type, story_id, certainty=0.75
-        )
+        tree_edge = None
+        if raw_rel != "relative":
+            tree_edge = _tree_edge_for_label(subject_id, other_id, raw_rel)
+        rel_id = None
+        if tree_edge:
+            frm, to, rel_type = tree_edge
+            rel_id = _insert_relationship(
+                cur, vault_id, frm, to, rel_type, story_id, certainty=0.9
+            )
         cur.execute(
             """
             INSERT INTO ai_suggestions (
@@ -1726,6 +2170,19 @@ def finalize_story_processing(
                             subject_id,
                         ),
                     )
+
+                # Final safety: sanitize any family_members before writing edges
+                try:
+                    from family_extract import sanitize_family_members
+
+                    extracted_data = dict(extracted_data or {})
+                    extracted_data["family_members"] = sanitize_family_members(
+                        extracted_data.get("family_members") or [],
+                        transcript,
+                        display if display != "Unknown" else person_name_hint,
+                    )
+                except Exception as se:
+                    print("family sanitize skipped:", se)
 
                 cur.execute(
                     """

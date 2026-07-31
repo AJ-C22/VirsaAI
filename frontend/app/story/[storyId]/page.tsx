@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import {
@@ -12,10 +12,12 @@ import {
   Briefcase,
   ArrowRight,
   Printer,
+  Trash2,
 } from "lucide-react";
 import DashboardLayout from "../../components/DashboardLayout";
 import { RequireAuth } from "../../components/RequireAuth";
 import { useAuth } from "../../lib/auth";
+import { ConfirmDeleteStoryModal } from "../../components/ConfirmDeleteStoryModal";
 
 type FullStory = {
   id: string;
@@ -43,9 +45,12 @@ type FullStory = {
 
 export default function StoryPage() {
   const { storyId } = useParams<{ storyId: string }>();
+  const router = useRouter();
   const { apiRoot } = useAuth();
   const [story, setStory] = useState<FullStory | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (!storyId) return;
@@ -61,7 +66,27 @@ export default function StoryPage() {
     void load();
   }, [storyId, apiRoot]);
 
-  if (error) {
+  const deleteStory = async () => {
+    if (!storyId || deleting) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiRoot}/story/${storyId}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          typeof data.detail === "string" ? data.detail : "Could not delete story"
+        );
+      }
+      router.replace("/story_library");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+      setDeleting(false);
+      setConfirmOpen(false);
+    }
+  };
+
+  if (error && !story) {
     return (
       <RequireAuth>
         <DashboardLayout>
@@ -104,6 +129,12 @@ export default function StoryPage() {
           </p>
         )}
 
+        {error && (
+          <p className="mb-4 text-sm text-[#9b2c2c] rounded-xl border border-red-100 bg-red-50 px-3 py-2 no-print">
+            {error}
+          </p>
+        )}
+
         <div className="flex flex-wrap gap-3 mb-10 no-print">
           <Link href={`/timeline/${storyId}`} className="btn-accent">
             <Calendar size={18} /> View timeline
@@ -117,7 +148,26 @@ export default function StoryPage() {
           <button type="button" className="btn-ghost" onClick={() => window.print()}>
             <Printer size={18} /> Export PDF
           </button>
+          <button
+            type="button"
+            className="btn-ghost text-[#9b2c2c] border-red-100 hover:bg-red-50"
+            disabled={deleting}
+            onClick={() => setConfirmOpen(true)}
+          >
+            <Trash2 size={18} />
+            Delete story
+          </button>
         </div>
+
+        <ConfirmDeleteStoryModal
+          open={confirmOpen}
+          storyName={story.person_name}
+          busy={deleting}
+          onCancel={() => {
+            if (!deleting) setConfirmOpen(false);
+          }}
+          onConfirm={() => void deleteStory()}
+        />
 
         <div className="grid lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2">

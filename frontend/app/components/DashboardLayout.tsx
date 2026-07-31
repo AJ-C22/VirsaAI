@@ -50,6 +50,7 @@ function NavLinks({
           <Link
             key={href}
             href={href}
+            prefetch={false}
             onClick={onNavigate}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition ${
               active

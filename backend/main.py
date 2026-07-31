@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Body
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from auth import (
@@ -23,6 +23,13 @@ from auth import (
     set_vault_plan,
     vault_dashboard_stats,
 )
+from billing import (
+    create_checkout_session,
+    create_portal_session,
+    handle_webhook,
+    stripe_configured,
+    sync_checkout_session,
+)
 from db.db_operations import (
     DEFAULT_VAULT_ID,
     add_media_asset,
@@ -34,6 +41,7 @@ from db.db_operations import (
     create_story_shell,
     delete_family_member,
     delete_relationship,
+    delete_story,
     get_all_people,
     get_all_stories,
     get_family_graph,
@@ -52,6 +60,7 @@ from db.db_operations import (
     set_story_status,
     unlink_shared_memory,
     update_family_member,
+    update_relationship,
     update_vault_culture,
 )
 from pipeline import process_transcript_story, process_uploaded_story
@@ -174,13 +183,79 @@ def plans():
                 ],
             },
         ],
-        "note": "Stripe checkout hooks ready via vault.stripe_* columns — wire keys to go live.",
+        "stripe_configured": stripe_configured(),
+        "note": (
+            "Stripe Checkout live"
+            if stripe_configured()
+            else "Add STRIPE_SECRET_KEY + STRIPE_PRICE_* to enable Checkout; Free plan works anytime."
+        ),
     }
+
+
+@app.post("/billing/checkout")
+def billing_checkout(payload: dict, user: dict = Depends(_require_user)):
+    vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
+    plan = (payload.get("plan") or "").strip().lower()
+    email = user.get("email") or ""
+    try:
+        return create_checkout_session(
+            vault_id=vault_id,
+            plan=plan,
+            user_id=user["sub"],
+            email=email,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+
+
+@app.post("/billing/portal")
+def billing_portal(payload: dict, user: dict = Depends(_require_user)):
+    vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
+    try:
+        return create_portal_session(vault_id=vault_id, user_id=user["sub"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+
+
+@app.get("/billing/session/{session_id}")
+def billing_session(session_id: str, user: dict = Depends(_require_user)):
+    try:
+        return sync_checkout_session(session_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+
+
+@app.post("/billing/webhook")
+async def billing_webhook(
+    request: Request,
+    stripe_signature: Optional[str] = Header(None, alias="Stripe-Signature"),
+):
+    payload = await request.body()
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe-Signature")
+    try:
+        return handle_webhook(payload, stripe_signature)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # stripe.error.SignatureVerificationError etc.
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/billing/set-plan")
 def billing_set_plan(payload: dict, user: dict = Depends(_require_user)):
-    """Dev/staging plan switcher until Stripe Checkout is connected."""
+    """Dev plan switcher when Stripe is not configured."""
+    if stripe_configured() and (payload.get("plan") or "") != "free":
+        raise HTTPException(
+            status_code=400,
+            detail="Use /billing/checkout for paid plans while Stripe is configured",
+        )
     vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
     plan = payload.get("plan") or "free"
     try:
@@ -371,6 +446,18 @@ def story_full(story_id: str):
     if not result:
         raise HTTPException(status_code=404, detail="Story not found")
     return result
+
+
+@app.delete("/story/{story_id}")
+def story_delete(story_id: str):
+    """
+    Delete a story and clean up timeline events, story-sourced tree links,
+    places/occupations, suggestions, media, and orphan persons from that story.
+    """
+    result = delete_story(story_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Story not found")
+    return {"ok": True, **result}
 
 
 @app.get("/story/{story_id}/status")
@@ -568,6 +655,8 @@ def update_member(member_id: str, payload: dict):
         birth_year=payload.get("birth_year"),
         death_year=payload.get("death_year"),
         notes=payload.get("notes"),
+        set_birth_year="birth_year" in payload,
+        set_death_year="death_year" in payload,
     )
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to update")
@@ -594,8 +683,24 @@ def add_relationship(payload: dict):
         notes=payload.get("notes"),
     )
     if not rel_id:
-        raise HTTPException(status_code=500, detail="Failed to create relationship")
+        raise HTTPException(
+            status_code=400,
+            detail="Only parent, child, spouse, or sibling links can be saved. "
+            "Leave uncertain people unattached.",
+        )
     return {"id": rel_id}
+
+
+@app.patch("/family/relationship/{relationship_id}")
+def patch_relationship(relationship_id: str, payload: dict):
+    ok = update_relationship(
+        relationship_id,
+        rel_type=payload.get("type") or payload.get("relationship"),
+        notes=payload.get("notes"),
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    return {"ok": True}
 
 
 @app.delete("/family/relationship/{relationship_id}")

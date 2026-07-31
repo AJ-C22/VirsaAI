@@ -130,19 +130,52 @@ def label_for_key(system: str, key: str) -> str:
 Edge = Tuple[str, str, str]  # from_id, to_id, type
 
 
+def _infer_sibling_edges(edges: List[Edge]) -> List[Edge]:
+    """People who share a parent are siblings — no extra DB edges needed."""
+    children_of: Dict[str, set] = {}
+    for frm, to, typ in edges:
+        t = (typ or "").lower()
+        if t == "parent":
+            children_of.setdefault(frm, set()).add(to)
+        elif t == "child":
+            children_of.setdefault(to, set()).add(frm)
+
+    existing = {
+        tuple(sorted([a, b]))
+        for a, b, typ in edges
+        if (typ or "").lower() == "sibling"
+    }
+    inferred: List[Edge] = []
+    for kids in children_of.values():
+        kids_list = list(kids)
+        for i in range(len(kids_list)):
+            for j in range(i + 1, len(kids_list)):
+                a, b = kids_list[i], kids_list[j]
+                key = tuple(sorted([a, b]))
+                if key in existing:
+                    continue
+                existing.add(key)
+                inferred.append((a, b, "sibling"))
+    return inferred
+
+
 def _neighbors(
     person_id: str, edges: List[Edge]
 ) -> Dict[str, List[Tuple[str, str]]]:
     """
     Return adjacency with role-from-ego semantics.
     For each stored edge, emit both structural views when possible.
+    Only pedigree roles (parent/child/spouse/sibling) are used — extended
+    types like aunt_uncle are ignored so labels come from path inference.
     """
     out: Dict[str, List[Tuple[str, str]]] = {}
 
     def add(src: str, dst: str, role: str):
         out.setdefault(src, []).append((dst, role))
 
-    for frm, to, typ in edges:
+    full_edges = list(edges) + _infer_sibling_edges(edges)
+
+    for frm, to, typ in full_edges:
         t = (typ or "relative").lower()
         if t == "parent":
             add(to, frm, "parent")  # child's parent
@@ -156,12 +189,7 @@ def _neighbors(
         elif t == "sibling":
             add(frm, to, "sibling")
             add(to, frm, "sibling")
-        elif t == "grandparent":
-            add(to, frm, "grandparent")
-            add(frm, to, "grandchild")
-        else:
-            add(frm, to, t)
-            add(to, frm, "relative")
+        # Ignore grandparent / aunt_uncle / cousin / relative noise
     return out
 
 
