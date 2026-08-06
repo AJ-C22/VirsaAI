@@ -1255,20 +1255,28 @@ def get_family_graph(
                 from kinship import label_all_relatives
 
                 edges = _structural_edges_for_kinship(relationships)
-                sex_by_id = {
-                    p["id"]: (p["sex"] or "").lower() or None
-                    for p in persons
-                    if p.get("sex")
-                }
-                # normalize sex hints
-                sex_norm = {}
-                for pid, s in sex_by_id.items():
-                    if not s:
-                        continue
-                    if s in ("m", "male", "man"):
-                        sex_norm[pid] = "male"
-                    elif s in ("f", "female", "woman"):
-                        sex_norm[pid] = "female"
+                sex_norm: Dict[str, str] = {}
+                birth_years: Dict[str, Optional[int]] = {}
+                for p in persons:
+                    birth_years[p["id"]] = p.get("birth_year")
+                    raw_sex = (p.get("sex") or "").lower().strip()
+                    if raw_sex in ("m", "male", "man"):
+                        sex_norm[p["id"]] = "male"
+                    elif raw_sex in ("f", "female", "woman"):
+                        sex_norm[p["id"]] = "female"
+                    else:
+                        # Punjabi / Sikh name heuristics when sex not stored
+                        name = (p.get("name") or "").lower()
+                        if any(
+                            t in name.split()
+                            for t in ("kaur", "kaur,", "begum", "devi")
+                        ) or name.endswith(" kaur"):
+                            sex_norm[p["id"]] = "female"
+                        elif any(
+                            t in name.split()
+                            for t in ("singh", "singh,", "kumar")
+                        ) or name.endswith(" singh"):
+                            sex_norm[p["id"]] = "male"
 
                 labels = label_all_relatives(
                     kinship_system,
@@ -1276,6 +1284,7 @@ def get_family_graph(
                     [p["id"] for p in persons],
                     edges,
                     sex_norm,
+                    birth_years,
                 )
                 for p in persons:
                     p["kinship_label"] = labels.get(p["id"])
