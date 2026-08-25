@@ -23,16 +23,16 @@ type Dash = {
 };
 
 export default function Dashboard() {
-  const { vaultId, apiRoot, user } = useAuth();
+  const { vaultId, user, apiFetch } = useAuth();
   const [data, setData] = useState<Dash | null>(null);
 
   useEffect(() => {
-    const id = vaultId || "00000000-0000-0000-0000-000000000001";
-    fetch(`${apiRoot}/dashboard?vault_id=${id}`)
-      .then((r) => r.json())
+    if (!vaultId) return;
+    apiFetch("/dashboard")
+      .then((r) => (r.ok ? r.json() : null))
       .then(setData)
       .catch(() => setData(null));
-  }, [vaultId, apiRoot]);
+  }, [vaultId, apiFetch]);
 
   const c = data?.counts;
   const quotaLabel =

@@ -17,6 +17,7 @@ import {
   LogOut,
   Menu,
   X,
+  Sparkles,
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
 
@@ -28,6 +29,7 @@ const NAV = [
   { href: "/timeline_home", label: "Timelines", icon: Calendar },
   { href: "/memories", label: "Memories", icon: Layers },
   { href: "/family", label: "Tree", icon: GitBranch },
+  { href: "/suggestions", label: "Review", icon: Sparkles },
   { href: "/artifacts", label: "Artifacts", icon: ImageIcon },
   { href: "/vault", label: "Vault", icon: Settings2 },
   { href: "/pricing", label: "Plans", icon: CreditCard },
@@ -73,7 +75,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const { user, logout } = useAuth();
+  const { user, logout, vaults, vaultId, setVaultId } = useAuth();
   const [open, setOpen] = useState(false);
 
   return (
@@ -94,9 +96,30 @@ export default function DashboardLayout({
           <NavLinks pathname={pathname} />
         </nav>
 
-        <div className="p-4 border-t border-sidebar-border">
+        <div className="p-4 border-t border-sidebar-border space-y-3">
           {user ? (
             <div>
+              {vaults.length > 0 && (
+                <label className="block px-1 mb-2">
+                  <span className="text-[10px] uppercase tracking-[0.14em] text-[#6f837a]">
+                    Vault
+                  </span>
+                  <select
+                    value={vaultId || ""}
+                    onChange={(e) => {
+                      setVaultId(e.target.value);
+                      window.location.reload();
+                    }}
+                    className="mt-1 w-full rounded-lg bg-sidebar-accent border border-sidebar-border text-[#e8efec] text-xs px-2 py-2"
+                  >
+                    {vaults.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <p className="text-xs text-[#6f837a] truncate px-1">{user.email}</p>
               <button
                 type="button"

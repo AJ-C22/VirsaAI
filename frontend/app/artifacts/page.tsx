@@ -13,10 +13,12 @@ type Artifact = {
   artifact_type: string;
   taken_year?: number;
   taken_place?: string;
+  mime_type?: string;
 };
 
 export default function ArtifactsPage() {
-  const { apiRoot, vaultId } = useAuth();
+  const { apiRoot, vaultId, authHeaders, apiFetch } = useAuth();
+  const [previews, setPreviews] = useState<Record<string, string>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<Artifact[]>([]);
   const [title, setTitle] = useState("");
@@ -26,14 +28,30 @@ export default function ArtifactsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
-    const q = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
-    const res = await fetch(`${apiRoot}/artifacts${q}`);
-    setItems(await res.json());
+    const res = await apiFetch("/artifacts");
+    if (res.ok) setItems(await res.json());
   };
 
   useEffect(() => {
     void load();
-  }, [apiRoot, vaultId]);
+  }, [apiFetch, vaultId]);
+
+  const openArtifact = async (id: string, mime?: string) => {
+    const res = await fetch(`${apiRoot}/artifacts/${id}/file`, {
+      headers: { ...authHeaders() },
+    });
+    if (!res.ok) {
+      setError("Could not open artifact file");
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    if (mime?.startsWith("image/") || blob.type.startsWith("image/")) {
+      setPreviews((prev) => ({ ...prev, [id]: url }));
+    } else {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
 
   const onUpload = async (file: File) => {
     setUploading(true);
@@ -47,6 +65,7 @@ export default function ArtifactsPage() {
       if (vaultId) form.append("vault_id", vaultId);
       const res = await fetch(`${apiRoot}/artifacts/upload`, {
         method: "POST",
+        headers: { ...authHeaders() },
         body: form,
       });
       const data = await res.json();
@@ -140,8 +159,23 @@ export default function ArtifactsPage() {
                 {a.artifact_type}
               </span>
             </div>
+            {previews[a.id] && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={previews[a.id]}
+                alt={a.title}
+                className="mb-3 w-full max-h-48 object-cover rounded-lg"
+              />
+            )}
             <h3 className="font-semibold text-ink">{a.title}</h3>
             {a.caption && <p className="text-sm text-ink-soft mt-1">{a.caption}</p>}
+            <button
+              type="button"
+              className="btn-ghost mt-3 text-sm"
+              onClick={() => void openArtifact(a.id, a.mime_type)}
+            >
+              {a.artifact_type === "photo" ? "Show image" : "Open file"}
+            </button>
           </div>
         ))}
       </div>

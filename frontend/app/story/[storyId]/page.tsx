@@ -46,7 +46,7 @@ type FullStory = {
 export default function StoryPage() {
   const { storyId } = useParams<{ storyId: string }>();
   const router = useRouter();
-  const { apiRoot } = useAuth();
+  const { apiRoot, authHeaders } = useAuth();
   const [story, setStory] = useState<FullStory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -56,7 +56,9 @@ export default function StoryPage() {
     if (!storyId) return;
     async function load() {
       try {
-        const res = await fetch(`${apiRoot}/story/${storyId}/full`);
+        const res = await fetch(`${apiRoot}/story/${storyId}/full`, {
+          headers: { ...authHeaders() },
+        });
         if (!res.ok) throw new Error("Story not found");
         setStory(await res.json());
       } catch (e: unknown) {
@@ -64,14 +66,17 @@ export default function StoryPage() {
       }
     }
     void load();
-  }, [storyId, apiRoot]);
+  }, [storyId, apiRoot, authHeaders]);
 
   const deleteStory = async () => {
     if (!storyId || deleting) return;
     setDeleting(true);
     setError(null);
     try {
-      const res = await fetch(`${apiRoot}/story/${storyId}`, { method: "DELETE" });
+      const res = await fetch(`${apiRoot}/story/${storyId}`, {
+        method: "DELETE",
+        headers: { ...authHeaders() },
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(

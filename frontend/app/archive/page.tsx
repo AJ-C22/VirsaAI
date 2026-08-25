@@ -23,7 +23,7 @@ type SearchResult = {
 };
 
 export default function ArchivePage() {
-  const { apiRoot, vaultId } = useAuth();
+  const { apiRoot, vaultId, apiFetch } = useAuth();
   const [q, setQ] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [loading, setLoading] = useState(false);
@@ -48,9 +48,7 @@ export default function ArchivePage() {
       try {
         const params = new URLSearchParams({ q: submitted });
         if (vaultId) params.set("vault_id", vaultId);
-        const res = await fetch(
-          `${apiRoot}/archive/search?${params.toString()}`
-        );
+        const res = await apiFetch(`/archive/search?${params.toString()}`);
         const data = await res.json();
         if (!cancelled) setResult(data);
       } finally {
@@ -60,7 +58,7 @@ export default function ArchivePage() {
     return () => {
       cancelled = true;
     };
-  }, [submitted, apiRoot, vaultId]);
+  }, [submitted, apiFetch, vaultId]);
 
   return (
     <RequireAuth>

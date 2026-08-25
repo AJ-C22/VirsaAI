@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 
 import stripe
 
-from auth import PLAN_LIMITS, set_vault_plan
+from auth import PLAN_LIMITS, assert_vault_member, set_vault_plan
 from db.db_connection import get_db_connection
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY") or None
@@ -47,18 +47,7 @@ def stripe_configured() -> bool:
 
 
 def _assert_vault_member(user_id: str, vault_id: str) -> None:
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT role FROM vault_members
-                WHERE vault_id = %s AND user_id = %s
-                """,
-                (vault_id, user_id),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise ValueError("You are not a member of this vault")
+    assert_vault_member(user_id, vault_id)
 
 
 def _vault_billing_row(vault_id: str) -> Optional[Dict[str, Any]]:
@@ -237,7 +226,7 @@ def create_portal_session(*, vault_id: str, user_id: str) -> Dict[str, str]:
     return {"url": session.url}
 
 
-def sync_checkout_session(session_id: str) -> Dict[str, Any]:
+def sync_checkout_session(session_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Confirm success page: pull session and apply plan if webhook lagged."""
     if not stripe.api_key:
         raise ValueError("Stripe is not configured")
@@ -245,6 +234,8 @@ def sync_checkout_session(session_id: str) -> Dict[str, Any]:
     vault_id = (session.metadata or {}).get("vault_id") or session.client_reference_id
     if not vault_id:
         raise ValueError("Checkout session missing vault")
+    if user_id:
+        assert_vault_member(user_id, vault_id)
     plan = (session.metadata or {}).get("plan")
     sub = session.subscription
     customer_id = session.customer

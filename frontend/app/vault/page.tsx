@@ -65,7 +65,8 @@ export default function VaultSettingsPage() {
     (async () => {
       try {
         const res = await fetch(
-          `${apiRoot}/vault?vault_id=${encodeURIComponent(vid)}`
+          `${apiRoot}/vault?vault_id=${encodeURIComponent(vid)}`,
+          { headers: { ...authHeaders() } }
         );
         if (!res.ok) throw new Error("Vault not found");
         const data = await res.json();

@@ -12,7 +12,7 @@ type Mode = "idle" | "recording" | "uploading";
 
 export default function RecordStoryPage() {
   const router = useRouter();
-  const { apiRoot, vaultId } = useAuth();
+  const { apiRoot, vaultId, authHeaders } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -38,11 +38,12 @@ export default function RecordStoryPage() {
       form.append("file", file, filename);
       if (personName.trim()) form.append("person_name", personName.trim());
       if (vaultId) form.append("vault_id", vaultId);
-      form.append("auto_confirm", "true");
+      form.append("auto_confirm", "false");
 
       try {
         const res = await fetch(`${apiRoot}/stories/upload`, {
           method: "POST",
+          headers: { ...authHeaders() },
           body: form,
         });
         const data = await res.json();
@@ -53,7 +54,7 @@ export default function RecordStoryPage() {
         setError(e instanceof Error ? e.message : "Upload failed");
       }
     },
-    [personName, router, apiRoot, vaultId]
+    [personName, router, apiRoot, vaultId, authHeaders]
   );
 
   const submitTranscript = useCallback(async () => {
@@ -67,11 +68,12 @@ export default function RecordStoryPage() {
     form.append("transcript", transcriptDraft.trim());
     if (personName.trim()) form.append("person_name", personName.trim());
     if (vaultId) form.append("vault_id", vaultId);
-    form.append("auto_confirm", "true");
+    form.append("auto_confirm", "false");
 
     try {
       const res = await fetch(`${apiRoot}/stories/from-transcript`, {
         method: "POST",
+        headers: { ...authHeaders() },
         body: form,
       });
       const data = await res.json();
@@ -81,7 +83,7 @@ export default function RecordStoryPage() {
       setMode("idle");
       setError(e instanceof Error ? e.message : "Processing failed");
     }
-  }, [transcriptDraft, personName, router, apiRoot, vaultId]);
+  }, [transcriptDraft, personName, router, apiRoot, vaultId, authHeaders]);
 
   const startRecording = async () => {
     setError(null);

@@ -1730,6 +1730,141 @@ def reject_suggestion(suggestion_id: str) -> bool:
         return False
 
 
+def confirm_suggestion(suggestion_id: str) -> bool:
+    """Accept a pending suggestion and promote linked suggested facts to confirmed."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, kind, payload, resolved_entity_id, status, story_id
+                    FROM ai_suggestions WHERE id = %s
+                    """,
+                    (suggestion_id,),
+                )
+                row = cur.fetchone()
+                if not row or row[4] != "pending":
+                    return False
+                kind = row[1]
+                payload = _loads(row[2]) if row[2] else {}
+                entity_id = _as_str(row[3])
+                story_id = _as_str(row[5])
+
+                if kind == "timeline_event":
+                    title = payload.get("event") or payload.get("title")
+                    if entity_id:
+                        cur.execute(
+                            """
+                            UPDATE timeline_events
+                            SET status = 'confirmed'
+                            WHERE id = %s
+                            """,
+                            (entity_id,),
+                        )
+                    elif story_id and title:
+                        cur.execute(
+                            """
+                            UPDATE timeline_events
+                            SET status = 'confirmed'
+                            WHERE source_story_id = %s AND title = %s
+                              AND status = 'suggested'
+                            RETURNING id
+                            """,
+                            (story_id, title),
+                        )
+                        found = cur.fetchone()
+                        if found:
+                            entity_id = str(found[0])
+                elif kind in ("relationship", "family_member"):
+                    entity_id = entity_id or _as_str(payload.get("relationship_id"))
+                elif kind == "place" and entity_id:
+                    cur.execute(
+                        "UPDATE places SET status = 'confirmed' WHERE id = %s",
+                        (entity_id,),
+                    )
+                elif kind == "occupation" and entity_id:
+                    cur.execute(
+                        "UPDATE occupations SET status = 'confirmed' WHERE id = %s",
+                        (entity_id,),
+                    )
+
+                cur.execute(
+                    """
+                    UPDATE ai_suggestions
+                    SET status = 'accepted',
+                        resolved_at = NOW(),
+                        resolved_entity_id = COALESCE(%s, resolved_entity_id)
+                    WHERE id = %s AND status = 'pending'
+                    """,
+                    (entity_id, suggestion_id),
+                )
+                return cur.rowcount > 0
+    except Exception as e:
+        print("Error confirm_suggestion:", e)
+        return False
+
+
+def get_entity_vault_id(kind: str, entity_id: str) -> Optional[str]:
+    """Resolve vault_id for authz on entity-scoped routes."""
+    table_col = {
+        "story": ("stories", "id"),
+        "person": ("persons", "id"),
+        "relationship": ("relationships", "id"),
+        "suggestion": ("ai_suggestions", "id"),
+        "artifact": ("artifacts", "id"),
+        "shared_memory": ("shared_memories", "id"),
+    }.get(kind)
+    if not table_col or not entity_id:
+        return None
+    table, col = table_col
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT vault_id FROM {table} WHERE {col} = %s",
+                    (entity_id,),
+                )
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] else None
+    except Exception as e:
+        print("Error get_entity_vault_id:", e)
+        return None
+
+
+def get_artifact(artifact_id: str) -> Optional[Dict]:
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, vault_id, title, caption, artifact_type, storage_path,
+                           mime_type, byte_size, person_id, story_id, taken_year, taken_place
+                    FROM artifacts WHERE id = %s
+                    """,
+                    (artifact_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]),
+            "vault_id": str(row[1]),
+            "title": row[2],
+            "caption": row[3],
+            "artifact_type": row[4],
+            "storage_path": row[5],
+            "mime_type": row[6],
+            "byte_size": row[7],
+            "person_id": _as_str(row[8]),
+            "story_id": _as_str(row[9]),
+            "taken_year": row[10],
+            "taken_place": row[11],
+        }
+    except Exception as e:
+        print("Error get_artifact:", e)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Media / jobs helpers (for upcoming upload pipeline)
 # ---------------------------------------------------------------------------

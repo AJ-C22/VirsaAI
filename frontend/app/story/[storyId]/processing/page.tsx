@@ -29,7 +29,7 @@ type Status = {
 export default function ProcessingPage() {
   const { storyId } = useParams<{ storyId: string }>();
   const router = useRouter();
-  const { apiRoot } = useAuth();
+  const { apiRoot, authHeaders } = useAuth();
   const [status, setStatus] = useState<Status | null>(null);
 
   useEffect(() => {
@@ -37,7 +37,9 @@ export default function ProcessingPage() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const res = await fetch(`${apiRoot}/story/${storyId}/status`);
+        const res = await fetch(`${apiRoot}/story/${storyId}/status`, {
+          headers: { ...authHeaders() },
+        });
         if (!res.ok) return;
         const data = (await res.json()) as Status;
         if (cancelled) return;
@@ -55,7 +57,7 @@ export default function ProcessingPage() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [storyId, router, apiRoot]);
+  }, [storyId, router, apiRoot, authHeaders]);
 
   const failed = status?.status === "failed";
   const progress = Math.round((status?.progress || 0) * 100);

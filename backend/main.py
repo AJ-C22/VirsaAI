@@ -5,12 +5,27 @@ from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Body, Request
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from auth import (
+    ADMIN_ROLES,
     PLAN_LIMITS,
+    WRITE_ROLES,
     accept_invite,
+    assert_vault_member,
     check_story_quota,
     create_invite,
     decode_token,
@@ -31,8 +46,8 @@ from billing import (
     sync_checkout_session,
 )
 from db.db_operations import (
-    DEFAULT_VAULT_ID,
     add_media_asset,
+    confirm_suggestion,
     create_artifact,
     create_family_member_global,
     create_person,
@@ -44,6 +59,8 @@ from db.db_operations import (
     delete_story,
     get_all_people,
     get_all_stories,
+    get_artifact,
+    get_entity_vault_id,
     get_family_graph,
     get_master_timeline,
     get_processing_status,
@@ -71,15 +88,30 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-app = FastAPI(title="VirsaAI API", version="2.1.0")
+app = FastAPI(title="VirsaAI API", version="2.2.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+_cors_raw = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000",
 )
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+# Dev escape hatch only — never leave CORS_ORIGINS=* in production
+if _cors_origins == ["*"]:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.get("/health")
@@ -90,8 +122,7 @@ def health_check():
 def _optional_user(authorization: Optional[str] = Header(None)) -> Optional[dict]:
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
-    payload = decode_token(authorization.split(" ", 1)[1].strip())
-    return payload
+    return decode_token(authorization.split(" ", 1)[1].strip())
 
 
 def _require_user(authorization: Optional[str] = Header(None)) -> dict:
@@ -99,6 +130,53 @@ def _require_user(authorization: Optional[str] = Header(None)) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="Sign in required")
     return user
+
+
+def _resolve_vault_id(explicit: Optional[str], user: dict) -> str:
+    """Prefer explicit vault_id; else first vault the user belongs to."""
+    if explicit:
+        return explicit
+    vaults = get_user_vaults(user["sub"])
+    if not vaults:
+        raise HTTPException(status_code=400, detail="No vault available for this account")
+    return vaults[0]["id"]
+
+
+def _require_vault(
+    user: dict,
+    vault_id: Optional[str],
+    *,
+    write: bool = False,
+    admin: bool = False,
+) -> str:
+    vid = _resolve_vault_id(vault_id, user)
+    roles = ADMIN_ROLES if admin else (WRITE_ROLES if write else None)
+    try:
+        assert_vault_member(user["sub"], vid, roles=roles)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return vid
+
+
+def _require_entity_vault(
+    user: dict,
+    kind: str,
+    entity_id: str,
+    *,
+    write: bool = False,
+) -> str:
+    vault_id = get_entity_vault_id(kind, entity_id)
+    if not vault_id:
+        raise HTTPException(status_code=404, detail=f"{kind.replace('_', ' ').title()} not found")
+    try:
+        assert_vault_member(
+            user["sub"],
+            vault_id,
+            roles=WRITE_ROLES if write else None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return vault_id
 
 
 @app.post("/auth/register")
@@ -129,11 +207,12 @@ def auth_me(user: dict = Depends(_require_user)):
 
 @app.get("/dashboard")
 def dashboard(
-    vault_id: str = Query(DEFAULT_VAULT_ID),
-    user: Optional[dict] = Depends(_optional_user),
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
 ):
+    vid = _require_vault(user, vault_id)
     try:
-        return vault_dashboard_stats(vault_id)
+        return vault_dashboard_stats(vid)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -194,7 +273,7 @@ def plans():
 
 @app.post("/billing/checkout")
 def billing_checkout(payload: dict, user: dict = Depends(_require_user)):
-    vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
+    vault_id = _require_vault(user, payload.get("vault_id"), admin=True)
     plan = (payload.get("plan") or "").strip().lower()
     email = user.get("email") or ""
     try:
@@ -212,7 +291,7 @@ def billing_checkout(payload: dict, user: dict = Depends(_require_user)):
 
 @app.post("/billing/portal")
 def billing_portal(payload: dict, user: dict = Depends(_require_user)):
-    vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
+    vault_id = _require_vault(user, payload.get("vault_id"), admin=True)
     try:
         return create_portal_session(vault_id=vault_id, user_id=user["sub"])
     except ValueError as e:
@@ -224,7 +303,7 @@ def billing_portal(payload: dict, user: dict = Depends(_require_user)):
 @app.get("/billing/session/{session_id}")
 def billing_session(session_id: str, user: dict = Depends(_require_user)):
     try:
-        return sync_checkout_session(session_id)
+        return sync_checkout_session(session_id, user_id=user["sub"])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -244,19 +323,18 @@ async def billing_webhook(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # stripe.error.SignatureVerificationError etc.
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/billing/set-plan")
 def billing_set_plan(payload: dict, user: dict = Depends(_require_user)):
-    """Dev plan switcher when Stripe is not configured."""
-    if stripe_configured() and (payload.get("plan") or "") != "free":
+    """Dev plan switcher when Stripe is not configured. Owner-only."""
+    if stripe_configured():
         raise HTTPException(
             status_code=400,
-            detail="Use /billing/checkout for paid plans while Stripe is configured",
+            detail="Use /billing/checkout for plan changes while Stripe is configured",
         )
-    vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
+    vault_id = _require_vault(user, payload.get("vault_id"), admin=True)
     plan = payload.get("plan") or "free"
     try:
         set_vault_plan(vault_id, plan)
@@ -267,9 +345,10 @@ def billing_set_plan(payload: dict, user: dict = Depends(_require_user)):
 
 @app.post("/vaults/invite")
 def vault_invite(payload: dict, user: dict = Depends(_require_user)):
+    vault_id = _require_vault(user, payload.get("vault_id"), write=True)
     try:
         return create_invite(
-            vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+            vault_id=vault_id,
             email=payload.get("email", ""),
             role=payload.get("role") or "editor",
             invited_by=user["sub"],
@@ -282,10 +361,11 @@ def vault_invite(payload: dict, user: dict = Depends(_require_user)):
 
 @app.get("/vaults/invites")
 def vault_invites_list(
-    vault_id: str = Query(DEFAULT_VAULT_ID),
+    vault_id: Optional[str] = Query(None),
     user: dict = Depends(_require_user),
 ):
-    return {"invites": list_invites(vault_id)}
+    vid = _require_vault(user, vault_id)
+    return {"invites": list_invites(vid)}
 
 
 @app.post("/vaults/invites/{invite_id}/revoke")
@@ -294,7 +374,7 @@ def vault_invite_revoke(
     payload: dict = Body(default={}),
     user: dict = Depends(_require_user),
 ):
-    vault_id = payload.get("vault_id") or DEFAULT_VAULT_ID
+    vault_id = _require_vault(user, payload.get("vault_id"), write=True)
     if not revoke_invite(invite_id, vault_id):
         raise HTTPException(status_code=404, detail="Invite not found or already closed")
     return {"ok": True}
@@ -318,17 +398,22 @@ def vault_accept_invite(payload: dict, user: dict = Depends(_require_user)):
 
 
 @app.get("/vault")
-def vault_get(vault_id: str = Query(DEFAULT_VAULT_ID)):
-    result = get_vault(vault_id)
+def vault_get(
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
+):
+    vid = _require_vault(user, vault_id)
+    result = get_vault(vid)
     if not result:
         raise HTTPException(status_code=404, detail="Vault not found")
     return result
 
 
 @app.patch("/vault")
-def vault_update(payload: dict):
+def vault_update(payload: dict, user: dict = Depends(_require_user)):
+    vault_id = _require_vault(user, payload.get("vault_id"), write=True)
     ok = update_vault_culture(
-        vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+        vault_id=vault_id,
         cultural_context=payload.get("cultural_context"),
         kinship_system=payload.get("kinship_system"),
         primary_language=payload.get("primary_language"),
@@ -336,39 +421,83 @@ def vault_update(payload: dict):
     )
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to update vault")
-    return get_vault(payload.get("vault_id") or DEFAULT_VAULT_ID)
+    return get_vault(vault_id)
 
 
 @app.get("/archive/search")
-def archive_search(q: str = Query(...), vault_id: str = Query(DEFAULT_VAULT_ID)):
-    return search_archive(q, vault_id)
+def archive_search(
+    q: str = Query(...),
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
+):
+    vid = _require_vault(user, vault_id)
+    return search_archive(q, vid)
 
 
 @app.get("/shared-memories")
-def shared_memories(vault_id: str = Query(DEFAULT_VAULT_ID)):
-    return list_shared_memories(vault_id)
+def shared_memories(
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
+):
+    vid = _require_vault(user, vault_id)
+    return list_shared_memories(vid)
 
 
 @app.post("/shared-memories/relink")
-def shared_memories_relink(vault_id: str = Query(DEFAULT_VAULT_ID)):
-    created = link_shared_memories_for_vault(vault_id)
-    return {"created_or_updated_clusters": created, "memories": list_shared_memories(vault_id)}
+def shared_memories_relink(
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
+):
+    vid = _require_vault(user, vault_id, write=True)
+    created = link_shared_memories_for_vault(vid)
+    return {
+        "created_or_updated_clusters": created,
+        "memories": list_shared_memories(vid),
+    }
 
 
 @app.delete("/shared-memories/{memory_id}")
-def shared_memory_unlink(memory_id: str, vault_id: str = Query(DEFAULT_VAULT_ID)):
-    if not unlink_shared_memory(memory_id, vault_id):
+def shared_memory_unlink(
+    memory_id: str,
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
+):
+    # Prefer entity vault; fall back to query vault after membership check
+    entity_vault = get_entity_vault_id("shared_memory", memory_id)
+    if entity_vault:
+        vid = _require_vault(user, entity_vault, write=True)
+    else:
+        vid = _require_vault(user, vault_id, write=True)
+    if not unlink_shared_memory(memory_id, vid):
         raise HTTPException(status_code=404, detail="Shared memory not found")
-    return {"ok": True, "memories": list_shared_memories(vault_id)}
+    return {"ok": True, "memories": list_shared_memories(vid)}
 
 
 @app.get("/artifacts")
 def artifacts_list(
-    vault_id: str = Query(DEFAULT_VAULT_ID),
+    vault_id: Optional[str] = Query(None),
     person_id: Optional[str] = None,
     artifact_type: Optional[str] = None,
+    user: dict = Depends(_require_user),
 ):
-    return list_artifacts(vault_id, person_id, artifact_type)
+    vid = _require_vault(user, vault_id)
+    return list_artifacts(vid, person_id, artifact_type)
+
+
+@app.get("/artifacts/{artifact_id}/file")
+def artifact_file(artifact_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "artifact", artifact_id)
+    artifact = get_artifact(artifact_id)
+    if not artifact or not artifact.get("storage_path"):
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    path = Path(artifact["storage_path"])
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file missing on disk")
+    return FileResponse(
+        path,
+        media_type=artifact.get("mime_type") or "application/octet-stream",
+        filename=path.name,
+    )
 
 
 @app.post("/artifacts/upload")
@@ -381,8 +510,10 @@ async def artifacts_upload(
     story_id: Optional[str] = Form(None),
     taken_year: Optional[int] = Form(None),
     taken_place: Optional[str] = Form(None),
-    vault_id: str = Form(DEFAULT_VAULT_ID),
+    vault_id: Optional[str] = Form(None),
+    user: dict = Depends(_require_user),
 ):
+    vid = _require_vault(user, vault_id, write=True)
     artifact_dir = UPLOAD_DIR / "artifacts"
     artifact_dir.mkdir(exist_ok=True)
     content = await file.read()
@@ -393,7 +524,7 @@ async def artifacts_upload(
         title=title or file.filename or "Family artifact",
         storage_path=str(dest),
         artifact_type=artifact_type,
-        vault_id=vault_id,
+        vault_id=vid,
         caption=caption,
         mime_type=file.content_type,
         byte_size=len(content),
@@ -404,36 +535,59 @@ async def artifacts_upload(
     )
     if not artifact_id:
         raise HTTPException(status_code=500, detail="Failed to save artifact")
-    return {"id": artifact_id, "title": title or file.filename}
+    return {
+        "id": artifact_id,
+        "title": title or file.filename,
+        "file_url": f"/artifacts/{artifact_id}/file",
+    }
 
 
-# ---- Timelines ----
 @app.get("/timeline")
-def list_people(vault_id: str = Query(DEFAULT_VAULT_ID)):
-    return get_all_people(vault_id)
+def list_people(
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
+):
+    vid = _require_vault(user, vault_id)
+    return get_all_people(vid)
 
 
 @app.get("/master-timeline")
 def master_timeline(
-    vault_id: str = Query(DEFAULT_VAULT_ID),
+    vault_id: Optional[str] = Query(None),
     person_id: Optional[List[str]] = Query(None),
+    user: dict = Depends(_require_user),
 ):
-    return get_master_timeline(vault_id, person_id)
+    vid = _require_vault(user, vault_id)
+    return get_master_timeline(vid, person_id)
 
 
 @app.get("/timeline/{entity_id}")
-def timeline(entity_id: str):
+def timeline(entity_id: str, user: dict = Depends(_require_user)):
+    # entity may be person id (preferred) or legacy story id
+    vault_id = get_entity_vault_id("person", entity_id) or get_entity_vault_id(
+        "story", entity_id
+    )
+    if not vault_id:
+        raise HTTPException(status_code=404, detail="Timeline not found")
+    try:
+        assert_vault_member(user["sub"], vault_id)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     return get_timeline_events(entity_id)
 
 
-# ---- Stories ----
 @app.get("/story_library")
-def list_stories(vault_id: str = Query(DEFAULT_VAULT_ID)):
-    return get_all_stories(vault_id)
+def list_stories(
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
+):
+    vid = _require_vault(user, vault_id)
+    return get_all_stories(vid)
 
 
 @app.get("/story/{story_id}")
-def story(story_id: str):
+def story(story_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "story", story_id)
     result = get_story(story_id)
     if not result:
         raise HTTPException(status_code=404, detail="Story not found")
@@ -441,7 +595,8 @@ def story(story_id: str):
 
 
 @app.get("/story/{story_id}/full")
-def story_full(story_id: str):
+def story_full(story_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "story", story_id)
     result = get_story_full(story_id)
     if not result:
         raise HTTPException(status_code=404, detail="Story not found")
@@ -449,11 +604,8 @@ def story_full(story_id: str):
 
 
 @app.delete("/story/{story_id}")
-def story_delete(story_id: str):
-    """
-    Delete a story and clean up timeline events, story-sourced tree links,
-    places/occupations, suggestions, media, and orphan persons from that story.
-    """
+def story_delete(story_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "story", story_id, write=True)
     result = delete_story(story_id)
     if not result:
         raise HTTPException(status_code=404, detail="Story not found")
@@ -461,7 +613,8 @@ def story_delete(story_id: str):
 
 
 @app.get("/story/{story_id}/status")
-def story_status(story_id: str):
+def story_status(story_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "story", story_id)
     result = get_processing_status(story_id)
     if not result:
         raise HTTPException(status_code=404, detail="Story not found")
@@ -507,14 +660,16 @@ async def upload_story(
     file: UploadFile = File(...),
     person_name: Optional[str] = Form(None),
     title: Optional[str] = Form(None),
-    vault_id: str = Form(DEFAULT_VAULT_ID),
-    auto_confirm: bool = Form(True),
+    vault_id: Optional[str] = Form(None),
+    auto_confirm: bool = Form(False),
+    user: dict = Depends(_require_user),
 ):
     """Upload oral history audio → async Whisper + Gemini pipeline."""
     if not os.getenv("GEMINI_KEY"):
         raise HTTPException(status_code=500, detail="GEMINI_KEY is not configured")
 
-    quota = check_story_quota(vault_id)
+    vid = _require_vault(user, vault_id, write=True)
+    quota = check_story_quota(vid)
     if not quota.get("allowed"):
         raise HTTPException(
             status_code=402,
@@ -522,8 +677,9 @@ async def upload_story(
         )
 
     story_id = create_story_shell(
-        vault_id=vault_id,
+        vault_id=vid,
         title=title or person_name or (file.filename or "New recording"),
+        contributor_id=user["sub"],
     )
     if not story_id:
         raise HTTPException(status_code=500, detail="Failed to create story")
@@ -563,8 +719,9 @@ async def story_from_transcript(
     transcript: str = Form(...),
     person_name: Optional[str] = Form(None),
     title: Optional[str] = Form(None),
-    vault_id: str = Form(DEFAULT_VAULT_ID),
-    auto_confirm: bool = Form(True),
+    vault_id: Optional[str] = Form(None),
+    auto_confirm: bool = Form(False),
+    user: dict = Depends(_require_user),
 ):
     """Skip Whisper — useful for demos / paste-in oral transcripts."""
     if not os.getenv("GEMINI_KEY"):
@@ -572,7 +729,8 @@ async def story_from_transcript(
     if not transcript.strip():
         raise HTTPException(status_code=400, detail="Transcript is empty")
 
-    quota = check_story_quota(vault_id)
+    vid = _require_vault(user, vault_id, write=True)
+    quota = check_story_quota(vid)
     if not quota.get("allowed"):
         raise HTTPException(
             status_code=402,
@@ -580,8 +738,9 @@ async def story_from_transcript(
         )
 
     story_id = create_story_shell(
-        vault_id=vault_id,
+        vault_id=vid,
         title=title or person_name or "Pasted oral history",
+        contributor_id=user["sub"],
     )
     if not story_id:
         raise HTTPException(status_code=500, detail="Failed to create story")
@@ -605,17 +764,19 @@ async def story_from_transcript(
     }
 
 
-# ---- Family tree ----
 @app.get("/family")
 def get_family(
-    vault_id: str = Query(DEFAULT_VAULT_ID),
+    vault_id: Optional[str] = Query(None),
     viewpoint: Optional[str] = Query(None, description="Person id for kinship viewpoint"),
+    user: dict = Depends(_require_user),
 ):
-    return get_family_graph(vault_id, viewpoint_person_id=viewpoint)
+    vid = _require_vault(user, vault_id)
+    return get_family_graph(vid, viewpoint_person_id=viewpoint)
 
 
 @app.post("/family/member")
-def create_member(payload: dict):
+def create_member(payload: dict, user: dict = Depends(_require_user)):
+    vault_id = _require_vault(user, payload.get("vault_id"), write=True)
     member_id = create_family_member_global(
         name=payload.get("name") or "Unknown",
         relationship=payload.get("relationship") or "relative",
@@ -623,7 +784,7 @@ def create_member(payload: dict):
         birth_year=payload.get("birth_year"),
         death_year=payload.get("death_year"),
         notes=payload.get("notes"),
-        vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+        vault_id=vault_id,
         related_to_person_id=payload.get("related_to_person_id"),
     )
     if not member_id:
@@ -632,10 +793,11 @@ def create_member(payload: dict):
 
 
 @app.post("/family/person")
-def create_person_endpoint(payload: dict):
+def create_person_endpoint(payload: dict, user: dict = Depends(_require_user)):
+    vault_id = _require_vault(user, payload.get("vault_id"), write=True)
     person_id = create_person(
         name=payload.get("name") or "Unknown",
-        vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+        vault_id=vault_id,
         birth_year=payload.get("birth_year"),
         death_year=payload.get("death_year"),
         notes=payload.get("notes"),
@@ -647,7 +809,8 @@ def create_person_endpoint(payload: dict):
 
 
 @app.patch("/family/member/{member_id}")
-def update_member(member_id: str, payload: dict):
+def update_member(member_id: str, payload: dict, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "person", member_id, write=True)
     ok = update_family_member(
         member_id=member_id,
         name=payload.get("name"),
@@ -664,7 +827,8 @@ def update_member(member_id: str, payload: dict):
 
 
 @app.delete("/family/member/{member_id}")
-def delete_member(member_id: str):
+def delete_member(member_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "person", member_id, write=True)
     ok = delete_family_member(member_id)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to delete")
@@ -672,12 +836,13 @@ def delete_member(member_id: str):
 
 
 @app.post("/family/relationship")
-def add_relationship(payload: dict):
+def add_relationship(payload: dict, user: dict = Depends(_require_user)):
+    vault_id = _require_vault(user, payload.get("vault_id"), write=True)
     rel_id = create_relationship(
         from_person_id=payload["from_person_id"],
         to_person_id=payload["to_person_id"],
         rel_type=payload.get("type") or payload.get("relationship") or "relative",
-        vault_id=payload.get("vault_id") or DEFAULT_VAULT_ID,
+        vault_id=vault_id,
         source_story_id=payload.get("source_story_id"),
         certainty=float(payload.get("certainty") or 1.0),
         notes=payload.get("notes"),
@@ -692,7 +857,10 @@ def add_relationship(payload: dict):
 
 
 @app.patch("/family/relationship/{relationship_id}")
-def patch_relationship(relationship_id: str, payload: dict):
+def patch_relationship(
+    relationship_id: str, payload: dict, user: dict = Depends(_require_user)
+):
+    _require_entity_vault(user, "relationship", relationship_id, write=True)
     ok = update_relationship(
         relationship_id,
         rel_type=payload.get("type") or payload.get("relationship"),
@@ -704,25 +872,36 @@ def patch_relationship(relationship_id: str, payload: dict):
 
 
 @app.delete("/family/relationship/{relationship_id}")
-def remove_relationship(relationship_id: str):
+def remove_relationship(relationship_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "relationship", relationship_id, write=True)
     ok = delete_relationship(relationship_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Relationship not found")
     return {"ok": True}
 
 
-# ---- Suggestions ----
 @app.get("/suggestions")
 def suggestions(
     story_id: Optional[str] = None,
     status: str = "pending",
-    vault_id: str = Query(DEFAULT_VAULT_ID),
+    vault_id: Optional[str] = Query(None),
+    user: dict = Depends(_require_user),
 ):
-    return list_suggestions(story_id=story_id, status=status, vault_id=vault_id)
+    vid = _require_vault(user, vault_id)
+    return list_suggestions(story_id=story_id, status=status, vault_id=vid)
 
 
 @app.post("/suggestions/{suggestion_id}/reject")
-def suggestion_reject(suggestion_id: str):
+def suggestion_reject(suggestion_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "suggestion", suggestion_id, write=True)
     if not reject_suggestion(suggestion_id):
         raise HTTPException(status_code=404, detail="Suggestion not found")
+    return {"ok": True}
+
+
+@app.post("/suggestions/{suggestion_id}/confirm")
+def suggestion_confirm(suggestion_id: str, user: dict = Depends(_require_user)):
+    _require_entity_vault(user, "suggestion", suggestion_id, write=True)
+    if not confirm_suggestion(suggestion_id):
+        raise HTTPException(status_code=404, detail="Suggestion not found or already resolved")
     return {"ok": True}

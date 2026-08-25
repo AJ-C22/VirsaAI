@@ -25,7 +25,7 @@ type Memory = {
 };
 
 export default function SharedMemoriesPage() {
-  const { apiRoot, vaultId } = useAuth();
+  const { apiRoot, vaultId, authHeaders, apiFetch } = useAuth();
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -34,7 +34,7 @@ export default function SharedMemoriesPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${apiRoot}/shared-memories${q}`);
+      const res = await apiFetch("/shared-memories");
       setMemories(await res.json());
     } finally {
       setLoading(false);
@@ -43,10 +43,10 @@ export default function SharedMemoriesPage() {
 
   useEffect(() => {
     void load();
-  }, [apiRoot, vaultId]);
+  }, [apiFetch, vaultId]);
 
   const relink = async () => {
-    await fetch(`${apiRoot}/shared-memories/relink${q}`, { method: "POST" });
+    await apiFetch("/shared-memories/relink", { method: "POST" });
     await load();
   };
 
@@ -55,8 +55,8 @@ export default function SharedMemoriesPage() {
       return;
     }
     const res = await fetch(
-      `${apiRoot}/shared-memories/${id}${q || "?vault_id="}`,
-      { method: "DELETE" }
+      `${apiRoot}/shared-memories/${id}${q}`,
+      { method: "DELETE", headers: { ...authHeaders() } }
     );
     if (res.ok) {
       const data = await res.json();

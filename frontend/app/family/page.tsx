@@ -71,13 +71,16 @@ const EDIT_REL_TYPES = [
 async function fetchFamilyGraph(
   apiRoot: string,
   viewpoint?: string,
-  vaultId?: string | null
+  vaultId?: string | null,
+  headers: Record<string, string> = {}
 ): Promise<FamilyGraph> {
   const params = new URLSearchParams();
   if (viewpoint) params.set("viewpoint", viewpoint);
   if (vaultId) params.set("vault_id", vaultId);
   const qs = params.toString();
-  const res = await fetch(`${apiRoot}/family${qs ? `?${qs}` : ""}`);
+  const res = await fetch(`${apiRoot}/family${qs ? `?${qs}` : ""}`, {
+    headers: { ...headers },
+  });
   if (!res.ok) {
     throw new Error(`Family API error (${res.status})`);
   }
@@ -394,6 +397,8 @@ function FamilyTreeCanvasInner({
   onSelectEdge: (e: Relationship | null) => void;
   clearSelectionKey?: number;
 }) {
+  const { authHeaders } = useAuth();
+
   const { fitView } = useReactFlow();
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingLink, setPendingLink] = useState<Connection | null>(null);
@@ -475,7 +480,7 @@ function FamilyTreeCanvasInner({
     if (!pendingLink?.source || !pendingLink?.target) return;
     const res = await fetch(`${apiRoot}/family/relationship`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
         from_person_id: pendingLink.source,
         to_person_id: pendingLink.target,
@@ -524,11 +529,13 @@ function FamilyTreeCanvasInner({
       for (const edge of selectedEdges) {
         await fetch(`${apiRoot}/family/relationship/${edge.id}`, {
           method: "DELETE",
+          headers: { ...authHeaders() },
         });
       }
       for (const node of selectedNodes) {
         await fetch(`${apiRoot}/family/member/${node.id}`, {
           method: "DELETE",
+          headers: { ...authHeaders() },
         });
       }
       if (selectedEdges.length || selectedNodes.length) onRefresh();
@@ -614,7 +621,7 @@ function FamilyTreeCanvasInner({
 }
 
 export default function Page() {
-  const { apiRoot, vaultId, loading: authLoading } = useAuth();
+  const { apiRoot, vaultId, loading: authLoading, authHeaders } = useAuth();
   const [graph, setGraph] = useState<FamilyGraph>({
     persons: [],
     relationships: [],
@@ -673,7 +680,8 @@ export default function Page() {
         const g = await fetchFamilyGraph(
           apiRoot,
           vp || undefined,
-          vaultId
+          vaultId,
+          authHeaders()
         );
         if (seq !== fetchSeq.current) return;
         setGraph(g);
@@ -692,7 +700,7 @@ export default function Page() {
         if (seq === fetchSeq.current) setLoading(false);
       }
     },
-    [apiRoot, vaultId, viewpoint, authLoading]
+    [apiRoot, vaultId, viewpoint, authLoading, authHeaders]
   );
 
   // Load when vault is ready — do not re-run on every viewpoint tweak
@@ -780,7 +788,7 @@ export default function Page() {
     try {
       const res = await fetch(`${apiRoot}/family/relationship/${relId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ type: nextType }),
       });
       if (!res.ok) throw new Error("Could not update relationship");
@@ -798,6 +806,7 @@ export default function Page() {
     try {
       const res = await fetch(`${apiRoot}/family/relationship/${relId}`, {
         method: "DELETE",
+        headers: { ...authHeaders() },
       });
       if (!res.ok) throw new Error("Could not remove link");
       softReload();
@@ -815,7 +824,7 @@ export default function Page() {
     try {
       const res = await fetch(`${apiRoot}/family/relationship`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           from_person_id: selected.id,
           to_person_id: linkToId,
@@ -846,7 +855,7 @@ export default function Page() {
     try {
       const res = await fetch(`${apiRoot}/family/member/${selected.id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           name: editName.trim(),
           birth_year: editBirth ? Number(editBirth) : null,
@@ -870,6 +879,7 @@ export default function Page() {
     try {
       const res = await fetch(`${apiRoot}/family/member/${selected.id}`, {
         method: "DELETE",
+        headers: { ...authHeaders() },
       });
       if (!res.ok) throw new Error("Could not delete person");
       setSelected(null);
@@ -890,7 +900,7 @@ export default function Page() {
         `${apiRoot}/family/relationship/${selectedEdge.id}`,
         {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ type: edgeType }),
         }
       );
@@ -909,7 +919,7 @@ export default function Page() {
     try {
       const res = await fetch(
         `${apiRoot}/family/relationship/${selectedEdge.id}`,
-        { method: "DELETE" }
+        { method: "DELETE", headers: { ...authHeaders() } }
       );
       if (!res.ok) throw new Error("Could not remove link");
       setSelectedEdge(null);
@@ -934,7 +944,7 @@ export default function Page() {
       const birthYear = newBirth ? Number(newBirth) : undefined;
       const res = await fetch(`${apiRoot}/family/member`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           name,
           birth_year: birthYear,
@@ -1308,7 +1318,10 @@ export default function Page() {
                                     try {
                                       await fetch(
                                         `${apiRoot}/family/relationship/${rel.id}`,
-                                        { method: "DELETE" }
+                                        {
+                                          method: "DELETE",
+                                          headers: { ...authHeaders() },
+                                        }
                                       );
                                       await fetch(
                                         `${apiRoot}/family/relationship`,
@@ -1316,6 +1329,7 @@ export default function Page() {
                                           method: "POST",
                                           headers: {
                                             "Content-Type": "application/json",
+                                            ...authHeaders(),
                                           },
                                           body: JSON.stringify({
                                             from_person_id: selected.id,

@@ -9,7 +9,7 @@ Living family history platform: oral stories → biographies → knowledge graph
 3. Host Postgres (Supabase) + schemas / RLS
 4. Supabase Storage for audio/artifacts
 5. Deploy API worker + Next.js
-6. Enforce vault membership on every write
+6. ~~Enforce vault membership on every write~~ **Done in code** — API requires Bearer + vault membership (viewer read / editor write / owner admin). Still set JWT secret + host before public beta.
 
 Details below and in `.cursor/rules/ship-backlog.mdc`.
 
@@ -21,9 +21,12 @@ Details below and in `.cursor/rules/ship-backlog.mdc`.
 | Family vault / persons / relationships | Live |
 | Cultural kinship labels | Live |
 | Shared multi-perspective memories | Live |
-| Artifacts + archive search | Live |
+| Artifacts + archive search | Live (+ authenticated file serve) |
 | Auth (register/login JWT) | Live (local; Supabase-swappable) |
-| Plans + story quotas | Live (dev plan switcher) |
+| Vault membership on API | Live (Bearer required; role-aware) |
+| AI suggestion review UI | Live (`/suggestions`) |
+| Vault-wide master timeline | Live (Timelines → Vault timeline) |
+| Plans + story quotas | Live (dev plan switcher when Stripe off) |
 | Onboarding | Live |
 | Stripe Checkout | Live (keys required) |
 | Supabase Auth/Storage/RLS | SQL ready — not connected |
@@ -53,7 +56,7 @@ Enforced on story create (`402` when over quota). `/billing/set-plan` switches p
 4. Move audio/artifacts to **Supabase Storage**  
 5. Deploy API worker (Whisper is CPU-heavy — use a GPU/CPU worker queue)  
 6. Deploy Next.js (Vercel) with `NEXT_PUBLIC_API_ROOT`  
-7. Enforce vault membership on every write (not just optional Bearer)  
+7. ~~Enforce vault membership on every write~~ (shipped in API + frontend auth headers) 
 
 ### Nice-to-have for growth
 - Email delivery for invites (currently copy-link)

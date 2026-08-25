@@ -18,7 +18,7 @@ When the user asks what to do next, what’s left, or similar, consult this list
 3. Host Postgres (Supabase) + apply schemas / RLS
 4. Move audio/artifacts to Supabase Storage
 5. Deploy API worker (Whisper) + Next.js (`NEXT_PUBLIC_API_ROOT`)
-6. Enforce vault membership on every write (not optional Bearer)
+6. ~~Enforce vault membership on every write~~ (done in API; keep verifying on new routes)
 
 ## Nice-to-have
 

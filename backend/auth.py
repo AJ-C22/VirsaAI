@@ -24,6 +24,41 @@ PLAN_LIMITS = {
     "legacy": {"story_limit": None, "member_limit": None, "label": "Legacy"},
 }
 
+# owner/editor may mutate vault data; viewers are read-only
+WRITE_ROLES = frozenset({"owner", "editor"})
+ADMIN_ROLES = frozenset({"owner"})
+
+
+def get_vault_role(user_id: str, vault_id: str) -> Optional[str]:
+    if not user_id or not vault_id:
+        return None
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT role FROM vault_members
+                WHERE vault_id = %s AND user_id = %s
+                """,
+                (vault_id, user_id),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row else None
+
+
+def assert_vault_member(
+    user_id: str,
+    vault_id: str,
+    *,
+    roles: Optional[frozenset] = None,
+) -> str:
+    """Return membership role or raise ValueError."""
+    role = get_vault_role(user_id, vault_id)
+    if not role:
+        raise ValueError("You are not a member of this vault")
+    if roles is not None and role not in roles:
+        raise ValueError("You do not have permission for this action")
+    return role
+
 
 def _b64url(data: bytes) -> str:
     import base64
@@ -467,10 +502,12 @@ def check_story_quota(vault_id: str) -> Dict[str, Any]:
             if not row:
                 return {"allowed": False, "reason": "Vault not found"}
             plan, limit = row[0], row[1]
+            # Count ready + in-flight so concurrent uploads cannot bypass quota
             cur.execute(
                 """
                 SELECT COUNT(*) FROM stories
-                WHERE vault_id = %s AND status = 'ready'
+                WHERE vault_id = %s
+                  AND status IN ('ready', 'processing', 'queued', 'uploading')
                 """,
                 (vault_id,),
             )

@@ -25,7 +25,7 @@ type TimelinePayload = {
 
 export default function TimelineDetailPage() {
   const { storyId } = useParams<{ storyId: string }>();
-  const { apiRoot } = useAuth();
+  const { apiRoot, authHeaders } = useAuth();
   const [data, setData] = useState<TimelinePayload | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -37,7 +37,9 @@ export default function TimelineDetailPage() {
       setLoading(true);
       setError("");
       try {
-        const res = await fetch(`${apiRoot}/timeline/${storyId}`);
+        const res = await fetch(`${apiRoot}/timeline/${storyId}`, {
+          headers: { ...authHeaders() },
+        });
         if (!res.ok) throw new Error("Failed");
         const json = await res.json();
         if (cancelled) return;
@@ -58,7 +60,7 @@ export default function TimelineDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [storyId, apiRoot]);
+  }, [storyId, apiRoot, authHeaders]);
 
   return (
     <RequireAuth>

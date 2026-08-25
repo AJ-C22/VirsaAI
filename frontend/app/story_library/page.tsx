@@ -17,7 +17,7 @@ type StoryRow = {
 };
 
 export default function StoryLibraryPage() {
-  const { apiRoot, vaultId } = useAuth();
+  const { apiRoot, vaultId, authHeaders, apiFetch } = useAuth();
   const [stories, setStories] = useState<StoryRow[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -29,8 +29,7 @@ export default function StoryLibraryPage() {
     async function loadStories() {
       setLoading(true);
       try {
-        const q = vaultId ? `?vault_id=${encodeURIComponent(vaultId)}` : "";
-        const res = await fetch(`${apiRoot}/story_library${q}`);
+        const res = await apiFetch("/story_library");
         const data = await res.json();
         setStories(Array.isArray(data) ? data : []);
       } catch {
@@ -40,7 +39,7 @@ export default function StoryLibraryPage() {
       }
     }
     void loadStories();
-  }, [apiRoot, vaultId]);
+  }, [apiFetch, vaultId]);
 
   const filtered = stories.filter((s) =>
     (s.person_name || "").toLowerCase().includes(search.toLowerCase())
@@ -53,6 +52,7 @@ export default function StoryLibraryPage() {
     try {
       const res = await fetch(`${apiRoot}/story/${pendingDelete.story_id}`, {
         method: "DELETE",
+        headers: { ...authHeaders() },
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
