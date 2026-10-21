@@ -24,6 +24,10 @@ type FullStory = {
   person_name: string;
   story: string;
   summary?: string;
+  raw_body?: string;
+  language?: string | null;
+  translation?: string | null;
+  original_transcript?: string | null;
   timeline_events?: Array<{
     id: string;
     year?: number;
@@ -195,6 +199,33 @@ export default function StoryPage() {
                 })}
               </div>
             </article>
+
+            {(story.original_transcript || story.raw_body || story.translation) && (
+              <section className="mt-6 surface-panel rounded-3xl p-8 md:p-10 no-print">
+                <h2 className="font-display text-2xl text-ink mb-2">In their words</h2>
+                <p className="text-sm text-ink-soft mb-4">
+                  {story.language && story.language !== "en"
+                    ? `Spoken language: ${story.language}. The original transcript is kept beside the English rendering.`
+                    : "The transcript is stored with the biography."}
+                </p>
+                <div className="text-ink leading-relaxed whitespace-pre-wrap">
+                  {story.original_transcript || story.raw_body}
+                </div>
+                {story.translation &&
+                  story.translation.trim() !==
+                    (story.original_transcript || story.raw_body || "").trim() && (
+                    <div className="mt-6 pt-6 border-t border-line">
+                      <h3 className="text-sm font-semibold uppercase tracking-[0.14em] text-brass-deep mb-3">
+                        English
+                      </h3>
+                      <div className="text-ink-soft leading-relaxed whitespace-pre-wrap">
+                        {story.translation}
+                      </div>
+                    </div>
+                  )}
+              </section>
+            )}
+
             <p className="mt-4 text-xs text-ink-soft text-right">
               Updated{" "}
               {story.updated_at

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Direct pedigree only — never partner/friend/in-law.
 _LINKABLE = frozenset(
@@ -89,17 +89,58 @@ _EX_SPOUSE = re.compile(
 
 # Transcript cues that support a given link type near a name.
 _SUPPORT_CUES: Dict[str, tuple[str, ...]] = {
-    "father": ("father", "dad", "papa", "my father", "my dad"),
-    "mother": ("mother", "mom", "mum", "mata", "my mother", "my mom"),
-    "husband": ("husband", "married", "marry", "wedding", "wife"),
-    "wife": ("wife", "married", "marry", "wedding", "husband"),
+    "father": ("father", "dad", "papa", "my father", "my dad", "pita", "pitaji", "bauji"),
+    "mother": ("mother", "mom", "mum", "mata", "my mother", "my mom", "beji", "biji", "mummy"),
+    "husband": ("husband", "married", "marry", "wedding", "wife", "pati"),
+    "wife": ("wife", "married", "marry", "wedding", "husband", "patni"),
     "spouse": ("spouse", "husband", "wife", "married", "marry", "wedding"),
-    "brother": ("brother", "brothers"),
-    "sister": ("sister", "sisters"),
-    "son": ("son", "boys", "my boy", "our son", "children", "child"),
-    "daughter": ("daughter", "my girl", "our daughter", "children", "child"),
-    "child": ("child", "children", "son", "daughter", "kids"),
+    "brother": ("brother", "brothers", "bhaji", "bhra", "veer", "pra"),
+    "sister": ("sister", "sisters", "didi", "bhain", "behen", "bhen"),
+    "son": ("son", "boys", "my boy", "our son", "children", "child", "putt", "puttar", "beta"),
+    "daughter": ("daughter", "my girl", "our daughter", "children", "child", "dhee", "beti"),
+    "child": ("child", "children", "son", "daughter", "kids", "putt", "dhee", "beta", "beti"),
 }
+
+# Extended blood relatives, attached only when the parent anchor already exists.
+# (hint, sex). Checked against stated relationship + cultural term + evidence.
+_EXTENDED_HINTS: List[tuple[re.Pattern[str], str, str]] = [
+    (re.compile(r"\b(dada|father'?s father|paternal grandfather)\b", re.I), "parent_of_father", "male"),
+    (re.compile(r"\b(dadi|father'?s mother|paternal grandmother)\b", re.I), "parent_of_father", "female"),
+    (re.compile(r"\b(nana|mother'?s father|maternal grandfather)\b", re.I), "parent_of_mother", "male"),
+    (re.compile(r"\b(nani|mother'?s mother|maternal grandmother)\b", re.I), "parent_of_mother", "female"),
+    (
+        re.compile(
+            r"\b(thaya|taya|chacha|father'?s (?:older |elder |younger |big |little )?(?:brother|bhaji)|paternal uncle)\b",
+            re.I,
+        ),
+        "sibling_of_father",
+        "male",
+    ),
+    (
+        re.compile(
+            r"\b(bhua|bua|phuphi|father'?s (?:older |elder |younger )?(?:sister|didi)|paternal aunt)\b",
+            re.I,
+        ),
+        "sibling_of_father",
+        "female",
+    ),
+    (
+        re.compile(
+            r"\b(mama|mother'?s (?:older |elder |younger )?(?:brother|bhaji)|maternal uncle)\b",
+            re.I,
+        ),
+        "sibling_of_mother",
+        "male",
+    ),
+    (
+        re.compile(
+            r"\b(masi|massi|mother'?s (?:older |elder |younger )?(?:sister|didi)|maternal aunt)\b",
+            re.I,
+        ),
+        "sibling_of_mother",
+        "female",
+    ),
+]
 
 
 def canonicalize_relationship(label: Optional[str]) -> str:
@@ -206,6 +247,24 @@ def _owned_by_someone_else(text: str, role: str) -> bool:
     return False
 
 
+def extended_link_hint(text: str) -> Optional[tuple[str, str]]:
+    """
+    Return (link_hint, sex) for a clear extended blood relative.
+
+    link_hint is parent_of_father, sibling_of_father, parent_of_mother,
+    or sibling_of_mother. Spouses of those relatives stay manual.
+    """
+    blob = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    if not blob:
+        return None
+    if re.search(r"\bin[\s-]?law\b", blob):
+        return None
+    for pattern, hint, sex in _EXTENDED_HINTS:
+        if pattern.search(blob):
+            return hint, sex
+    return None
+
+
 def sanitize_family_members(
     members: Any,
     transcript: str,
@@ -289,6 +348,14 @@ def sanitize_family_members(
                     linkable = False
 
         final_rel = canon if linkable else "relative"
+        hint_blob = f"{stated} {cultural} {evidence}"
+        hint = None
+        if final_rel == "relative":
+            hint = extended_link_hint(hint_blob)
+            if hint and _owned_by_someone_else(hint_blob, "brother" if hint[1] == "male" else "sister"):
+                # "Raj's chacha" is not the storyteller's father's brother.
+                if not re.search(r"\bmy\b", hint_blob, re.I):
+                    hint = None
         notes_parts = []
         if cultural:
             notes_parts.append(cultural)
@@ -310,6 +377,8 @@ def sanitize_family_members(
                 "notes": " · ".join(notes_parts) if notes_parts else raw.get("notes"),
                 "confidence": "high" if linkable else "low",
                 "evidence": evidence or None,
+                "link_hint": hint[0] if hint else None,
+                "implied_sex": hint[1] if hint else None,
             }
         )
         seen_names.add(name_key)
@@ -366,6 +435,134 @@ EXAMPLES:
 Transcript:
 {transcript}
 """.strip()
+
+
+_NAME_SKIP = {"singh", "kaur"}
+
+
+def named_family_links(
+    text: str, people: List[Tuple[str, str]]
+) -> List[Tuple[str, str, str]]:
+    """
+    Link someone to the relative the story actually names.
+
+    "Jasbir married Harjit" is a spouse edge. "Simran's mother, Parkash"
+    is a parent edge. "Simran's brother, Tejinder" is a sibling edge.
+    A marriage told as "I married …" stays with the direct storyteller link.
+    """
+    aliases = _person_aliases(people)
+    if not text or not aliases:
+        return []
+    spans = _name_spans(text, aliases)
+    found: List[Tuple[str, str, str]] = []
+    seen: set[Tuple[str, str, str]] = set()
+
+    def keep(edge: Tuple[str, str, str]) -> None:
+        if edge[0] == edge[1] or edge in seen:
+            return
+        seen.add(edge)
+        found.append(edge)
+
+    for match in re.finditer(r"\b(?:married|marries|marry|wedded|wed)\b", text, re.I):
+        clause_lo, clause_hi = _clause_bounds(text, match.start())
+        left = _nearest_span(
+            spans, match.start(), before=True, window=80, lo=clause_lo, hi=clause_hi
+        )
+        right = _nearest_span(
+            spans, match.end(), before=False, window=50, lo=clause_lo, hi=clause_hi
+        )
+        if left and right and left[2] != right[2]:
+            a, b = sorted((left[2], right[2]))
+            keep((a, b, "spouse"))
+
+    role_re = re.compile(
+        r"^(?:'s|’s)\s+(mother|father|mom|dad|brother|sister|husband|wife)\b",
+        re.I,
+    )
+    for start, end, owner in spans:
+        role_match = role_re.match(text[end : end + 24])
+        if not role_match:
+            continue
+        other = _nearest_span(
+            spans, end + role_match.end(), before=False, window=40
+        )
+        if not other or other[2] == owner:
+            continue
+        role = role_match.group(1).lower()
+        if role in ("mother", "father", "mom", "dad"):
+            keep((other[2], owner, "parent"))
+        elif role in ("brother", "sister"):
+            a, b = sorted((owner, other[2]))
+            keep((a, b, "sibling"))
+        else:
+            a, b = sorted((owner, other[2]))
+            keep((a, b, "spouse"))
+    return found
+
+
+def _person_aliases(people: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    full: Dict[str, List[str]] = {}
+    first: Dict[str, List[str]] = {}
+    for person_id, raw_name in people:
+        name = re.sub(r"\s+", " ", (raw_name or "").strip())
+        if not name:
+            continue
+        full.setdefault(name.lower(), []).append(person_id)
+        given = name.split()[0].lower()
+        if len(given) >= 3 and given not in _NAME_SKIP:
+            first.setdefault(given, []).append(person_id)
+    aliases: List[Tuple[str, str]] = []
+    for label, ids in full.items():
+        if len(set(ids)) == 1:
+            aliases.append((label, ids[0]))
+    for label, ids in first.items():
+        if len(set(ids)) == 1 and label not in full:
+            aliases.append((label, ids[0]))
+    aliases.sort(key=lambda item: len(item[0]), reverse=True)
+    return aliases
+
+
+def _name_spans(
+    text: str, aliases: List[Tuple[str, str]]
+) -> List[Tuple[int, int, str]]:
+    lookup = {label: person_id for label, person_id in aliases}
+    pattern = re.compile(
+        r"\b(?:" + "|".join(re.escape(label) for label, _ in aliases) + r")\b",
+        re.I,
+    )
+    return [
+        (match.start(), match.end(), lookup[match.group(0).lower()])
+        for match in pattern.finditer(text)
+    ]
+
+
+def _clause_bounds(text: str, pos: int) -> Tuple[int, int]:
+    """Keep a marriage inside one sentence, so the previous line is not a spouse."""
+    previous = max((text.rfind(mark, 0, pos) for mark in ".!?\n"), default=-1)
+    following = [text.find(mark, pos) for mark in ".!?\n"]
+    following = [index for index in following if index >= 0]
+    return previous + 1, min(following) if following else len(text)
+
+
+def _nearest_span(
+    spans: List[Tuple[int, int, str]],
+    pos: int,
+    before: bool,
+    window: int,
+    lo: int = 0,
+    hi: Optional[int] = None,
+) -> Optional[Tuple[int, int, str]]:
+    end_limit = hi if hi is not None else 10**9
+    best: Optional[Tuple[int, int, str]] = None
+    for start, end, person_id in spans:
+        if start < lo or end > end_limit:
+            continue
+        if before:
+            if end <= pos and pos - end <= window and (best is None or end > best[1]):
+                best = (start, end, person_id)
+        elif start >= pos and start - pos <= window and (best is None or start < best[0]):
+            best = (start, end, person_id)
+    return best
 
 
 def parse_json_response(text: str) -> Optional[Dict[str, Any]]:

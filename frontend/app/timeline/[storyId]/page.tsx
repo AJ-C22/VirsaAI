@@ -5,27 +5,23 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import Sidebar from "../../components/DashboardLayout";
+import Chronicle, {
+  chronicleSpan,
+  type ChronicleMoment,
+  type MomentDraft,
+} from "../../components/Chronicle";
 import { RequireAuth } from "../../components/RequireAuth";
 import { useAuth } from "../../lib/auth";
 
-type TimelineEvent = {
-  id?: string;
-  year?: number | string;
-  title?: string;
-  event?: string;
-  description?: string;
-  place?: string;
-  location?: string;
-};
-
 type TimelinePayload = {
   person_name?: string;
-  events: TimelineEvent[];
+  events: ChronicleMoment[];
 };
 
 export default function TimelineDetailPage() {
   const { storyId } = useParams<{ storyId: string }>();
-  const { apiRoot, authHeaders } = useAuth();
+  const { apiRoot, authHeaders, apiFetch, vaults, vaultId } = useAuth();
+  const canEdit = (vaults.find((vault) => vault.id === vaultId)?.role ?? "owner") !== "viewer";
   const [data, setData] = useState<TimelinePayload | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -62,17 +58,51 @@ export default function TimelineDetailPage() {
     };
   }, [storyId, apiRoot, authHeaders]);
 
+  async function saveMoment(moment: ChronicleMoment, draft: MomentDraft) {
+    if (!moment.id) throw new Error("This moment cannot be edited");
+    const res = await apiFetch(`/timeline/moments/${encodeURIComponent(moment.id)}`, {
+      method: "PATCH",
+      json: draft,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const detail = body.detail;
+      throw new Error(typeof detail === "string" ? detail : "Could not save this moment");
+    }
+    const saved = (await res.json()) as ChronicleMoment;
+    setData((current) =>
+      current
+        ? {
+            ...current,
+            events: current.events.map((event) =>
+              event.id === moment.id ? { ...event, ...saved } : event
+            ),
+          }
+        : current
+    );
+  }
+
+  const events = data?.events ?? [];
+  const span = chronicleSpan(events);
+  const name = data?.person_name || "This life";
+  const opening =
+    span.first && span.last && span.first !== span.last
+      ? `From ${span.first}${span.firstPlace ? ` in ${span.firstPlace}` : ""} to ${span.last}.`
+      : span.first
+        ? `${span.firstPlace ? `${span.first} in ${span.firstPlace}.` : `${span.first}.`}`
+        : "The years are still unrecorded.";
+
   return (
     <RequireAuth>
       <Sidebar>
         <Link
           href="/timeline_home"
-          className="inline-flex items-center gap-1.5 text-sm text-ink-soft hover:text-ink mb-6"
+          className="inline-flex items-center gap-1.5 text-sm text-ink-soft hover:text-ink mb-8"
         >
-          <ArrowLeft className="w-4 h-4" /> All timelines
+          <ArrowLeft className="w-4 h-4" /> The family story
         </Link>
 
-        {loading && <p className="text-ink-soft">Loading timeline…</p>}
+        {loading && <p className="text-ink-soft">Opening this life…</p>}
 
         {error && (
           <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-[#9b2c2c]">
@@ -82,57 +112,27 @@ export default function TimelineDetailPage() {
 
         {!loading && !error && data && (
           <>
-            <p className="label-eyebrow mb-3">Life timeline</p>
-            <h1 className="font-display text-4xl md:text-5xl text-ink mb-2 text-balance">
-              {data.person_name || "Timeline"}
+            <p className="label-eyebrow mb-3">A life</p>
+            <h1 className="font-display text-5xl md:text-6xl text-ink mb-4 text-balance max-w-3xl">
+              {name}
             </h1>
-            <p className="text-ink-soft mb-10">
-              {data.events.length} confirmed event
-              {data.events.length === 1 ? "" : "s"}
+            <p className="text-lg text-ink-soft leading-relaxed max-w-xl mb-2">
+              {opening}{" "}
+              {events.length} moment{events.length === 1 ? "" : "s"}
+              {events.length === 1 ? " is" : " are"} written here.
             </p>
 
-            {data.events.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-line p-10 text-center">
+            {events.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-line p-10 text-center max-w-xl mt-8">
                 <p className="text-ink-soft mb-4">
-                  No events yet for this person. Archive a story to fill the line.
+                  No events yet for this person. Archive a story to begin the chronicle.
                 </p>
                 <Link href="/record" className="btn-primary">
                   Record a story
                 </Link>
               </div>
             ) : (
-              <ol className="relative border-l border-line ml-3 space-y-8">
-                {data.events.map((evt, idx) => (
-                  <li key={evt.id || idx} className="relative pl-8">
-                    <span className="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-brass ring-4 ring-mist" />
-                    <div className="text-xs font-semibold text-brass-deep tabular-nums mb-1">
-                      {evt.year ?? "—"}
-                    </div>
-                    <h2 className="font-display text-2xl text-ink leading-snug">
-                      {evt.event || evt.title}
-                    </h2>
-                    {evt.title && evt.event && evt.title !== evt.event && (
-                      <p className="text-sm text-ink-soft mt-1 italic">{evt.title}</p>
-                    )}
-                    {evt.description && (
-                      <p className="text-ink-soft mt-2 leading-relaxed max-w-2xl">
-                        {evt.description}
-                      </p>
-                    )}
-                    {(evt.place || evt.location) && (
-                      <p className="text-xs text-ink-soft mt-2">
-                        {evt.place || evt.location}
-                      </p>
-                    )}
-                  </li>
-                ))}
-                <li className="relative pl-8 pb-2">
-                  <span className="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-stone-2 ring-4 ring-mist" />
-                  <p className="text-xs uppercase tracking-[0.16em] text-ink-soft">
-                    Present day
-                  </p>
-                </li>
-              </ol>
+              <Chronicle moments={events} onSave={canEdit ? saveMoment : undefined} />
             )}
           </>
         )}

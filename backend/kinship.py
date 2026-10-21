@@ -2,11 +2,11 @@
 Culturally aware kinship labeling for VirsaAI.
 
 Structural edges are only parent / spouse / sibling (child flipped to parent).
-Cultural labels (Chacha, Masi, Bhabi, …) are inferred from paths relative to a
-viewpoint person (ego).
+Cultural labels are inferred from paths relative to a viewpoint person (ego),
+so the same edge reads as Bhaji from one person and as Putt from their parent.
 
 Punjabi defaults when age is unknown:
-  - Father's brother → Chacha (younger), not Taya
+  - Father's brother or male cousin → Chacha (younger), not Thaya
   - Husband's brother → Deor (younger), not Jeth
 """
 from __future__ import annotations
@@ -29,12 +29,12 @@ PUNJABI: Dict[str, str] = {
     "son": "Putt",
     "daughter": "Dhee",
     "child": "Child",
-    "brother": "Bhra",
-    "brother_older": "Vadda Bhra",
-    "brother_younger": "Chhota Bhra",
-    "sister": "Bhain",
-    "sister_older": "Vaddi Bhain",
-    "sister_younger": "Chhoti Bhain",
+    "brother": "Bhaji",
+    "brother_older": "Bhaji",
+    "brother_younger": "Chhota Bhaji",
+    "sister": "Didi",
+    "sister_older": "Didi",
+    "sister_younger": "Chhoti Didi",
     "sibling": "Sibling",
     # Paternal grandparents
     "father_father": "Dada",
@@ -45,22 +45,27 @@ PUNJABI: Dict[str, str] = {
     # Great-grandparents
     "father_father_father": "Pardada",
     "father_father_mother": "Pardadi",
+    "father_mother_father": "Pardada",
+    "father_mother_mother": "Pardadi",
+    "mother_father_father": "Parnana",
+    "mother_father_mother": "Parnani",
     "mother_mother_father": "Parnana",
     "mother_mother_mother": "Parnani",
-    # Father's siblings (+ spouses) — default younger when age unknown
+    # Father's siblings and male/female cousins (+ spouses).
+    # Unknown age defaults to the younger term.
     "father_brother": "Chacha",
     "father_brother_younger": "Chacha",
-    "father_brother_older": "Taya",
+    "father_brother_older": "Thaya",
     "father_brother_wife": "Chachi",
     "father_brother_younger_wife": "Chachi",
-    "father_brother_older_wife": "Tayi",
-    "father_sister": "Bua",
-    "father_sister_husband": "Fufad",
+    "father_brother_older_wife": "Thayi",
+    "father_sister": "Bhua",
+    "father_sister_husband": "Fufur",
     # Mother's siblings (+ spouses)
     "mother_brother": "Mama",
     "mother_brother_wife": "Mami",
     "mother_sister": "Masi",
-    "mother_sister_husband": "Masa",
+    "mother_sister_husband": "Masar",
     # Sibling's spouse / children
     "brother_wife": "Bhabi",
     "sister_husband": "Jija",
@@ -178,6 +183,14 @@ GENERIC: Dict[str, str] = {
     "father_mother": "Paternal Grandmother",
     "mother_father": "Maternal Grandfather",
     "mother_mother": "Maternal Grandmother",
+    "father_father_father": "Paternal Great-grandfather",
+    "father_father_mother": "Paternal Great-grandmother",
+    "father_mother_father": "Paternal Great-grandfather",
+    "father_mother_mother": "Paternal Great-grandmother",
+    "mother_father_father": "Maternal Great-grandfather",
+    "mother_father_mother": "Maternal Great-grandmother",
+    "mother_mother_father": "Maternal Great-grandfather",
+    "mother_mother_mother": "Maternal Great-grandmother",
     "father_brother": "Paternal Uncle",
     "father_brother_younger": "Paternal Uncle (younger)",
     "father_brother_older": "Paternal Uncle (elder)",
@@ -237,10 +250,8 @@ def _infer_sibling_edges(edges: List[Edge]) -> List[Edge]:
     children_of: Dict[str, set] = {}
     for frm, to, typ in edges:
         t = (typ or "").lower()
-        if t == "parent":
+        if t in ("parent", "child"):
             children_of.setdefault(frm, set()).add(to)
-        elif t == "child":
-            children_of.setdefault(to, set()).add(frm)
 
     existing = {
         tuple(sorted([a, b]))
@@ -261,6 +272,32 @@ def _infer_sibling_edges(edges: List[Edge]) -> List[Edge]:
     return inferred
 
 
+def _infer_coparent_edges(edges: List[Edge]) -> List[Edge]:
+    """Two parents of the same child are spouses when no spouse edge exists."""
+    parents_of: Dict[str, set] = {}
+    for frm, to, typ in edges:
+        t = (typ or "").lower()
+        if t in ("parent", "child"):
+            parents_of.setdefault(to, set()).add(frm)
+
+    existing = {
+        tuple(sorted([a, b]))
+        for a, b, typ in edges
+        if (typ or "").lower() == "spouse"
+    }
+    inferred: List[Edge] = []
+    for parents in parents_of.values():
+        if len(parents) != 2:
+            continue
+        a, b = list(parents)
+        key = tuple(sorted([a, b]))
+        if key in existing:
+            continue
+        existing.add(key)
+        inferred.append((a, b, "spouse"))
+    return inferred
+
+
 def _neighbors(edges: List[Edge]) -> Dict[str, List[Tuple[str, str]]]:
     """Adjacency: person → [(other, role_from_person)]."""
     out: Dict[str, List[Tuple[str, str]]] = {}
@@ -268,7 +305,9 @@ def _neighbors(edges: List[Edge]) -> Dict[str, List[Tuple[str, str]]]:
     def add(src: str, dst: str, role: str):
         out.setdefault(src, []).append((dst, role))
 
-    for frm, to, typ in list(edges) + _infer_sibling_edges(edges):
+    for frm, to, typ in (
+        list(edges) + _infer_sibling_edges(edges) + _infer_coparent_edges(edges)
+    ):
         t = (typ or "").lower()
         if t == "parent":
             add(to, frm, "parent")
@@ -338,7 +377,9 @@ def infer_relationship_key(
     """
     Infer a cultural key for `other` relative to `ego`.
 
-    Uses up to 3 structural hops. Age-unknown father's brother → Chacha.
+    Uses up to 5 structural hops so a parent's cousin uses the same
+    term as that parent's sibling (Thaya, Chacha, Bhua, Mama, Masi).
+    Age-unknown father's brother → Chacha.
     """
     if ego_id == other_id:
         return None
@@ -531,22 +572,18 @@ def infer_relationship_key(
                         else "father_brother_daughter"
                     )
 
-                # Parent → parent → parent  (great-grandparents, light)
+                # Parent → parent → parent  (great-grandparents)
                 if role1 == "parent" and role2 == "parent" and role3 == "parent":
                     p1 = parent_sex.get(mid1)
-                    if p1 == "male":
-                        return (
-                            "father_father_father"
-                            if other_sex != "female"
-                            else "father_father_mother"
-                        )
+                    p2 = _sex_or(mid2, sex_by_id)
+                    male_gp = other_sex != "female"
+                    if p1 == "female" and p2 == "male":
+                        return "mother_father_father" if male_gp else "mother_father_mother"
                     if p1 == "female":
-                        return (
-                            "mother_mother_father"
-                            if other_sex != "female"
-                            else "mother_mother_mother"
-                        )
-                    return "father_father_father"
+                        return "mother_mother_father" if male_gp else "mother_mother_mother"
+                    if p2 == "female":
+                        return "father_mother_father" if male_gp else "father_mother_mother"
+                    return "father_father_father" if male_gp else "father_father_mother"
 
                 # Spouse → sibling → spouse
                 if role1 == "spouse" and role2 == "sibling" and role3 == "spouse":
@@ -564,6 +601,63 @@ def infer_relationship_key(
                     return "wife_sister_husband"
 
                 # Sibling → spouse already covered; sibling → child covered
+
+    # Parent's cousin (4 hops): ego → parent → grandparent → sibling → child.
+    # Labeled like that parent's own sibling: Thaya/Chacha/Bhua or Mama/Masi.
+    for mid1, role1 in graph.get(ego_id, []):
+        if role1 != "parent":
+            continue
+        for mid2, role2 in graph.get(mid1, []):
+            if role2 != "parent" or mid2 == ego_id:
+                continue
+            for mid3, role3 in graph.get(mid2, []):
+                if role3 != "sibling" or mid3 in (ego_id, mid1):
+                    continue
+                for dst, role4 in graph.get(mid3, []):
+                    if role4 != "child" or dst != other_id or dst in (ego_id, mid1, mid2):
+                        continue
+                    parent_s = parent_sex.get(mid1)
+                    older = _older_than(other_id, mid1, birth_year_by_id)
+                    if parent_s == "female":
+                        return "mother_brother" if other_sex != "female" else "mother_sister"
+                    if other_sex == "female":
+                        return "father_sister"
+                    if older is True:
+                        return "father_brother_older"
+                    return "father_brother"
+
+    # That cousin's spouse (5 hops).
+    for mid1, role1 in graph.get(ego_id, []):
+        if role1 != "parent":
+            continue
+        for mid2, role2 in graph.get(mid1, []):
+            if role2 != "parent" or mid2 == ego_id:
+                continue
+            for mid3, role3 in graph.get(mid2, []):
+                if role3 != "sibling" or mid3 in (ego_id, mid1):
+                    continue
+                for mid4, role4 in graph.get(mid3, []):
+                    if role4 != "child" or mid4 in (ego_id, mid1, mid2):
+                        continue
+                    for dst, role5 in graph.get(mid4, []):
+                        if (
+                            role5 != "spouse"
+                            or dst != other_id
+                            or dst in (ego_id, mid1, mid2, mid3)
+                        ):
+                            continue
+                        parent_s = parent_sex.get(mid1)
+                        cousin_sex = _sex_or(mid4, sex_by_id)
+                        older = _older_than(mid4, mid1, birth_year_by_id)
+                        if parent_s == "female":
+                            if cousin_sex == "female":
+                                return "mother_sister_husband"
+                            return "mother_brother_wife"
+                        if cousin_sex == "female":
+                            return "father_sister_husband"
+                        if older is True:
+                            return "father_brother_older_wife"
+                        return "father_brother_wife"
 
     return "relative"
 

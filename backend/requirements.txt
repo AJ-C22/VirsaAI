@@ -1,4 +1,5 @@
 openai-whisper
+faster-whisper
 ollama
 python-dotenv
 google-genai

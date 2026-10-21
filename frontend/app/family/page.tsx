@@ -1,48 +1,33 @@
 "use client";
 
-import React, {
-  useState,
-  useEffect,
+import {
   useCallback,
+  useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
-import ReactFlow, {
-  Background,
-  Controls,
-  MiniMap,
-  ReactFlowProvider,
-  useNodesState,
-  useEdgesState,
-  useReactFlow,
-  Node,
-  Edge,
-  Connection,
-  NodeTypes,
-  NodeProps,
-  ConnectionLineType,
-  ConnectionMode,
-  Handle,
-  Position,
-  OnSelectionChangeParams,
-} from "reactflow";
-import "reactflow/dist/style.css";
-import { Plus, Trash2, X } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import Sidebar from "../components/DashboardLayout";
-import { useAuth } from "../lib/auth";
+import { buildPedigree, type CoupleUnit } from "./pedigree";
 import { RequireAuth } from "../components/RequireAuth";
+import { useAuth } from "../lib/auth";
 
-export type Person = {
+type Person = {
   id: string;
   name: string;
-  relationship?: string | null;
   kinship_label?: string | null;
   birth_year?: number | null;
   death_year?: number | null;
   notes?: string | null;
+  sex?: string | null;
+  birth_place?: string | null;
 };
 
-export type Relationship = {
+type Relationship = {
   id: string;
   from_person_id: string;
   to_person_id: string;
@@ -53,990 +38,465 @@ type FamilyGraph = {
   persons: Person[];
   relationships: Relationship[];
   vault?: { kinship_system?: string; name?: string };
-  viewpoint_person_id?: string;
+  viewpoint_person_id?: string | null;
 };
 
-const REL_TYPES = [
-  { value: "parent", label: "Parent of →" },
-  { value: "child", label: "Child of →" },
-  { value: "spouse", label: "Spouse / partner" },
-  { value: "sibling", label: "Sibling" },
-];
+const ADD_OPTIONS = [
+  { id: "father", label: "Father", sex: "male" },
+  { id: "mother", label: "Mother", sex: "female" },
+  { id: "spouse", label: "Spouse", sex: "" },
+  { id: "son", label: "Son", sex: "male" },
+  { id: "daughter", label: "Daughter", sex: "female" },
+  { id: "brother", label: "Brother", sex: "male" },
+  { id: "sister", label: "Sister", sex: "female" },
+] as const;
 
-const EDIT_REL_TYPES = [
-  ...REL_TYPES,
-  { value: "relative", label: "Unattached (remove link)" },
-];
+type AddId = (typeof ADD_OPTIONS)[number]["id"];
 
-async function fetchFamilyGraph(
-  apiRoot: string,
-  viewpoint?: string,
-  vaultId?: string | null,
-  headers: Record<string, string> = {}
-): Promise<FamilyGraph> {
-  const params = new URLSearchParams();
-  if (viewpoint) params.set("viewpoint", viewpoint);
-  if (vaultId) params.set("vault_id", vaultId);
-  const qs = params.toString();
-  const res = await fetch(`${apiRoot}/family${qs ? `?${qs}` : ""}`, {
-    headers: { ...headers },
-  });
-  if (!res.ok) {
-    throw new Error(`Family API error (${res.status})`);
-  }
-  const json = await res.json();
-  const relationships = (json.relationships ?? []).filter(
-    (r: Relationship) =>
-      r.type === "parent" || r.type === "spouse" || r.type === "sibling"
-  );
-  return {
-    persons: json.persons ?? json.members ?? [],
-    relationships,
-    vault: json.vault,
-    viewpoint_person_id: json.viewpoint_person_id,
-  };
-}
-
-const HANDLE_STYLE: React.CSSProperties = {
-  width: 10,
-  height: 10,
-  background: "#0d6b5c",
-  border: "2px solid #fff",
-  borderRadius: "50%",
+type TreeArrange = {
+  unitOrder: string[];
+  members: Record<string, string[]>;
 };
 
-function handlesForRelType(type: string): {
-  sourceHandle: string;
-  targetHandle: string;
-} {
-  if (type === "spouse") {
-    return { sourceHandle: "r-source", targetHandle: "l-target" };
-  }
-  // parent → vertical straight line
-  return { sourceHandle: "b-source", targetHandle: "t-target" };
-}
-
-const NODE_W = 220;
-const COL_W = 260;
-const ROW_H = 200;
-
-function orderWithSpouses(
-  ids: string[],
-  spousesOf: Map<string, string[]>
-): string[] {
-  const remaining = new Set(ids);
-  const out: string[] = [];
-  for (const id of ids) {
-    if (!remaining.has(id)) continue;
-    out.push(id);
-    remaining.delete(id);
-    for (const s of spousesOf.get(id) || []) {
-      if (!remaining.has(s)) continue;
-      out.push(s);
-      remaining.delete(s);
-    }
-  }
-  return out;
-}
-
-/** Top-down pedigree: parents above children, spouses side-by-side, unattached to the right. */
-function layoutPedigree(
-  persons: Person[],
-  relationships: Relationship[],
-  viewpointId?: string
-): Map<string, { x: number; y: number }> {
-  const ids = persons.map((p) => String(p.id));
-  const idSet = new Set(ids);
-
-  const parentsOf = new Map<string, string[]>();
-  const spousesOf = new Map<string, string[]>();
-
-  for (const r of relationships) {
-    const frm = String(r.from_person_id);
-    const to = String(r.to_person_id);
-    if (!idSet.has(frm) || !idSet.has(to)) continue;
-    if (r.type === "parent") {
-      parentsOf.set(to, [...(parentsOf.get(to) || []), frm]);
-    } else if (r.type === "spouse") {
-      spousesOf.set(frm, [...(spousesOf.get(frm) || []), to]);
-      spousesOf.set(to, [...(spousesOf.get(to) || []), frm]);
-    }
-  }
-
-  const attached = new Set<string>();
-  for (const r of relationships) {
-    if (r.type !== "parent" && r.type !== "spouse") continue;
-    attached.add(String(r.from_person_id));
-    attached.add(String(r.to_person_id));
-  }
-
-  const linked = ids.filter((id) => attached.has(id));
-  const unattached = ids.filter((id) => !attached.has(id));
-
-  const gen = new Map<string, number>();
-  for (const id of linked) {
-    const pars = (parentsOf.get(id) || []).filter((p) => attached.has(p));
-    if (pars.length === 0) gen.set(id, 0);
-  }
-  if (linked.length && gen.size === 0) {
-    linked.forEach((id) => gen.set(id, 0));
-  }
-
-  let guard = 0;
-  let changed = true;
-  while (changed && guard < linked.length + 5) {
-    changed = false;
-    guard += 1;
-    for (const id of linked) {
-      const pars = (parentsOf.get(id) || []).filter((p) => gen.has(p));
-      if (!pars.length) continue;
-      const next = Math.max(...pars.map((p) => gen.get(p)!)) + 1;
-      if (!gen.has(id) || gen.get(id)! < next) {
-        gen.set(id, next);
-        changed = true;
-      }
-    }
-    for (const id of linked) {
-      if (!gen.has(id)) continue;
-      for (const s of spousesOf.get(id) || []) {
-        if (!attached.has(s)) continue;
-        const g = gen.get(id)!;
-        if (!gen.has(s) || gen.get(s)! < g) {
-          gen.set(s, g);
-          changed = true;
-        } else if (gen.get(id)! < gen.get(s)!) {
-          gen.set(id, gen.get(s)!);
-          changed = true;
-        }
-      }
-    }
-  }
-  for (const id of linked) {
-    if (!gen.has(id)) gen.set(id, 0);
-  }
-
-  const byGen = new Map<number, string[]>();
-  for (const id of linked) {
-    const g = gen.get(id) || 0;
-    byGen.set(g, [...(byGen.get(g) || []), id]);
-  }
-  const maxGen = Math.max(0, ...Array.from(byGen.keys()), 0);
-
-  const orderInGen = new Map<number, string[]>();
-  let roots = byGen.get(0) || [];
-  if (viewpointId && roots.includes(viewpointId)) {
-    roots = [viewpointId, ...roots.filter((id) => id !== viewpointId)];
-  }
-  orderInGen.set(0, orderWithSpouses(roots, spousesOf));
-
-  for (let g = 1; g <= maxGen; g++) {
-    const prev = orderInGen.get(g - 1) || [];
-    const indexOf = new Map(prev.map((id, i) => [id, i]));
-    const members = [...(byGen.get(g) || [])];
-    members.sort((a, b) => {
-      const avg = (id: string) => {
-        const pars = (parentsOf.get(id) || []).filter((p) => indexOf.has(p));
-        if (!pars.length) return 999;
-        return pars.reduce((s, p) => s + (indexOf.get(p) || 0), 0) / pars.length;
-      };
-      return avg(a) - avg(b);
-    });
-    orderInGen.set(g, orderWithSpouses(members, spousesOf));
-  }
-
-  const positions = new Map<string, { x: number; y: number }>();
-  let widest = 1;
-  for (let g = 0; g <= maxGen; g++) {
-    const order = orderInGen.get(g) || [];
-    widest = Math.max(widest, order.length);
-    const y = 48 + g * ROW_H;
-    order.forEach((id, i) => {
-      positions.set(id, { x: 48 + i * COL_W, y });
-    });
-  }
-
-  // Unknown / unlinked people sit to the right of the pedigree
-  const sideX = 48 + widest * COL_W + 80;
-  unattached.forEach((id, i) => {
-    positions.set(id, { x: sideX, y: 48 + i * (ROW_H - 40) });
-  });
-
-  return positions;
-}
-
-function MemberNode({ data, selected }: NodeProps<Person>) {
-  return (
-    <div
-      className={`select-none w-[220px] bg-white rounded-2xl border p-4 relative transition ${
-        selected ? "border-brass shadow-md" : "border-line shadow-sm"
-      }`}
-    >
-      {/* Top — parents / ancestors */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        id="t-target"
-        style={HANDLE_STYLE}
-      />
-      <Handle
-        type="source"
-        position={Position.Top}
-        id="t-source"
-        style={HANDLE_STYLE}
-      />
-      {/* Bottom — children / descendants */}
-      <Handle
-        type="target"
-        position={Position.Bottom}
-        id="b-target"
-        style={HANDLE_STYLE}
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="b-source"
-        style={HANDLE_STYLE}
-      />
-      {/* Left / right — siblings, spouses, peers */}
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="l-target"
-        style={HANDLE_STYLE}
-      />
-      <Handle
-        type="source"
-        position={Position.Left}
-        id="l-source"
-        style={HANDLE_STYLE}
-      />
-      <Handle
-        type="target"
-        position={Position.Right}
-        id="r-target"
-        style={HANDLE_STYLE}
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="r-source"
-        style={HANDLE_STYLE}
-      />
-      <div className="font-display text-xl text-ink leading-tight">{data.name}</div>
-      <div className="text-sm text-brass-deep mt-1.5 font-medium">
-        {data.kinship_label || data.relationship || "—"}
-      </div>
-      <div className="text-xs text-ink-soft mt-2 tabular-nums">
-        {data.birth_year ?? ""}
-        {data.death_year ? ` — ${data.death_year}` : ""}
-      </div>
-    </div>
-  );
-}
-
-const nodeTypes: NodeTypes = {
-  memberNode: MemberNode,
-};
-
-function FamilyTreeCanvas({
-  persons,
-  relationships,
-  apiRoot,
-  vaultId,
-  viewpointId,
-  onRefresh,
-  onSelectPerson,
-  onSelectEdge,
-  clearSelectionKey = 0,
-}: {
-  persons: Person[];
-  relationships: Relationship[];
-  apiRoot: string;
-  vaultId: string | null;
-  viewpointId?: string;
-  onRefresh: () => void;
-  onSelectPerson: (p: Person | null) => void;
-  onSelectEdge: (e: Relationship | null) => void;
-  clearSelectionKey?: number;
-}) {
-  return (
-    <ReactFlowProvider>
-      <FamilyTreeCanvasInner
-        persons={persons}
-        relationships={relationships}
-        apiRoot={apiRoot}
-        vaultId={vaultId}
-        viewpointId={viewpointId}
-        onRefresh={onRefresh}
-        onSelectPerson={onSelectPerson}
-        onSelectEdge={onSelectEdge}
-        clearSelectionKey={clearSelectionKey}
-      />
-    </ReactFlowProvider>
-  );
-}
-
-function FamilyTreeCanvasInner({
-  persons,
-  relationships,
-  apiRoot,
-  vaultId,
-  viewpointId,
-  onRefresh,
-  onSelectPerson,
-  onSelectEdge,
-  clearSelectionKey = 0,
-}: {
-  persons: Person[];
-  relationships: Relationship[];
-  apiRoot: string;
-  vaultId: string | null;
-  viewpointId?: string;
-  onRefresh: () => void;
-  onSelectPerson: (p: Person | null) => void;
-  onSelectEdge: (e: Relationship | null) => void;
-  clearSelectionKey?: number;
-}) {
-  const { authHeaders } = useAuth();
-
-  const { fitView } = useReactFlow();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [pendingLink, setPendingLink] = useState<Connection | null>(null);
-  const [linkType, setLinkType] = useState("parent");
-  const ignoreSelectionRef = useRef(false);
-
-  const initialNodes: Node[] = useMemo(() => {
-    const positions = layoutPedigree(persons, relationships, viewpointId);
-    return persons.map((p) => ({
-      id: String(p.id),
-      type: "memberNode",
-      data: p,
-      position: positions.get(String(p.id)) || { x: 48, y: 48 },
-    }));
-  }, [persons, relationships, viewpointId]);
-
-  const initialEdges: Edge[] = useMemo(
-    () =>
-      relationships
-        .filter((r) => r.type === "parent" || r.type === "spouse")
-        .map((r) => {
-          const { sourceHandle, targetHandle } = handlesForRelType(r.type);
-          return {
-            id: r.id,
-            source: r.from_person_id,
-            target: r.to_person_id,
-            sourceHandle,
-            targetHandle,
-            label: r.type === "spouse" ? "spouse" : "",
-            type: "straight",
-            style: { stroke: "#0d6b5c", strokeWidth: 1.75 },
-            selectable: true,
-          };
-        }),
-    [relationships]
-  );
-
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-
-  // Parent asked to leave edit mode (X / Add person) — clear RF selection too
-  useEffect(() => {
-    if (!clearSelectionKey) return;
-    ignoreSelectionRef.current = true;
-    setNodes((nds) => nds.map((n) => ({ ...n, selected: false })));
-    setEdges((eds) => eds.map((e) => ({ ...e, selected: false })));
-    const t = window.setTimeout(() => {
-      ignoreSelectionRef.current = false;
-    }, 100);
-    return () => window.clearTimeout(t);
-  }, [clearSelectionKey, setNodes, setEdges]);
-
-  useEffect(() => {
-    // Re-apply pedigree layout whenever graph data changes
-    setNodes(initialNodes.map((n) => ({ ...n, selected: false })));
-    setEdges(initialEdges.map((e) => ({ ...e, selected: false })));
-    const t = window.setTimeout(() => {
-      fitView({ padding: 0.28, duration: 220 });
-    }, 60);
-    return () => window.clearTimeout(t);
-  }, [initialNodes, initialEdges, setNodes, setEdges, fitView]);
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => {
-      fitView({ padding: 0.3, duration: 150 });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [fitView]);
-
-  const onConnect = useCallback((params: Connection) => {
-    if (!params.source || !params.target) return;
-    setPendingLink(params);
-    setLinkType("parent");
-  }, []);
-
-  const confirmLink = async () => {
-    if (!pendingLink?.source || !pendingLink?.target) return;
-    const res = await fetch(`${apiRoot}/family/relationship`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({
-        from_person_id: pendingLink.source,
-        to_person_id: pendingLink.target,
-        type: linkType,
-        vault_id: vaultId,
-        certainty: 1.0,
-      }),
-    });
-    setPendingLink(null);
-    if (res.ok) onRefresh();
-  };
-
-  const onSelectionChange = useCallback(
-    ({ nodes: ns, edges: es }: OnSelectionChangeParams) => {
-      if (ignoreSelectionRef.current) return;
-      if (ns.length === 1) {
-        const person = persons.find((p) => p.id === ns[0].id) || null;
-        onSelectPerson(person);
-        onSelectEdge(null);
-      } else if (es.length === 1) {
-        const rel = relationships.find((r) => r.id === es[0].id) || null;
-        onSelectEdge(rel);
-        onSelectPerson(null);
-      } else {
-        onSelectPerson(null);
-        onSelectEdge(null);
-      }
-    },
-    [persons, relationships, onSelectPerson, onSelectEdge]
-  );
-
-  const onPaneClick = useCallback(() => {
-    onSelectPerson(null);
-    onSelectEdge(null);
-  }, [onSelectPerson, onSelectEdge]);
-
-  const onKeyDown = useCallback(
-    async (e: KeyboardEvent) => {
-      if (e.key !== "Delete" && e.key !== "Backspace") return;
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
-      const selectedEdges = edges.filter((edge) => edge.selected);
-      const selectedNodes = nodes.filter((n) => n.selected);
-
-      for (const edge of selectedEdges) {
-        await fetch(`${apiRoot}/family/relationship/${edge.id}`, {
-          method: "DELETE",
-          headers: { ...authHeaders() },
+function arrangePedigree(pedigree: ReturnType<typeof buildPedigree>, arrange: TreeArrange) {
+  const rank = new Map(arrange.unitOrder.map((id, index) => [id, index]));
+  const generations = pedigree.generations.map((row) =>
+    [...row]
+      .sort((a, b) => (rank.get(a.id) ?? 1_000_000) - (rank.get(b.id) ?? 1_000_000))
+      .map((unit) => {
+        const order = arrange.members[unit.id];
+        if (!order) return unit;
+        const members = [...unit.members].sort((a, b) => {
+          const left = order.indexOf(a);
+          const right = order.indexOf(b);
+          return (left < 0 ? 999 : left) - (right < 0 ? 999 : right);
         });
-      }
-      for (const node of selectedNodes) {
-        await fetch(`${apiRoot}/family/member/${node.id}`, {
-          method: "DELETE",
-          headers: { ...authHeaders() },
-        });
-      }
-      if (selectedEdges.length || selectedNodes.length) onRefresh();
-    },
-    [apiRoot, edges, nodes, onRefresh]
+        return { ...unit, members, personId: members[0], spouses: members.slice(1) };
+      })
   );
-
-  useEffect(() => {
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onKeyDown]);
-
-  return (
-    <div ref={containerRef} className="relative w-full h-full min-h-[400px]">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onSelectionChange={onSelectionChange}
-        onPaneClick={onPaneClick}
-        fitView
-        fitViewOptions={{ padding: 0.3 }}
-        connectionMode={ConnectionMode.Loose}
-        connectionLineType={ConnectionLineType.Straight}
-        nodesDraggable
-        nodesConnectable
-        elementsSelectable
-        style={{ width: "100%", height: "100%", background: "transparent" }}
-      >
-        <MiniMap
-          maskColor="rgba(12,17,16,0.08)"
-          nodeColor="#0d6b5c"
-          style={{ borderRadius: 12 }}
-        />
-        <Controls />
-        <Background gap={20} size={1} color="#cfd8d4" />
-      </ReactFlow>
-
-      {pendingLink && (
-        <div className="absolute inset-0 z-20 bg-ink/40 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-line p-6 w-full max-w-sm shadow-lg">
-            <h3 className="font-display text-2xl text-ink mb-2">
-              Link relationship
-            </h3>
-            <p className="text-sm text-ink-soft mb-4">
-              Drag direction: source → target. Pick how they are related.
-            </p>
-            <select
-              className="field mb-4"
-              value={linkType}
-              onChange={(e) => setLinkType(e.target.value)}
-            >
-              {REL_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn-primary flex-1"
-                onClick={() => void confirmLink()}
-              >
-                Save link
-              </button>
-              <button
-                type="button"
-                className="btn-ghost"
-                onClick={() => setPendingLink(null)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  return { ...pedigree, generations };
 }
 
-export default function Page() {
-  const { apiRoot, vaultId, loading: authLoading, authHeaders } = useAuth();
-  const [graph, setGraph] = useState<FamilyGraph>({
-    persons: [],
-    relationships: [],
-  });
+function yearsOf(person: Person): string {
+  if (!person.birth_year && !person.death_year) return "";
+  const start = person.birth_year ?? "";
+  const end = person.death_year ?? "";
+  if (person.birth_year && !person.death_year) return String(person.birth_year);
+  return `${start}–${end}`;
+}
+
+function edgeFor(kind: AddId, anchorId: string, otherId: string) {
+  if (kind === "father" || kind === "mother") {
+    return { from_person_id: otherId, to_person_id: anchorId, type: "parent" };
+  }
+  if (kind === "son" || kind === "daughter") {
+    return { from_person_id: anchorId, to_person_id: otherId, type: "parent" };
+  }
+  if (kind === "spouse") {
+    return { from_person_id: anchorId, to_person_id: otherId, type: "spouse" };
+  }
+  return { from_person_id: anchorId, to_person_id: otherId, type: "sibling" };
+}
+
+export default function FamilyPage() {
+  const { vaultId, apiFetch } = useAuth();
+  const [graph, setGraph] = useState<FamilyGraph | null>(null);
   const [viewpoint, setViewpoint] = useState<string>("");
+  const [selectedId, setSelectedId] = useState<string>("");
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<Person | null>(null);
-  const [selectedEdge, setSelectedEdge] = useState<Relationship | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fetchSeq = useRef(0);
-  const [clearSelectionKey, setClearSelectionKey] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftSex, setDraftSex] = useState("");
+  const [draftBirth, setDraftBirth] = useState("");
+  const [draftDeath, setDraftDeath] = useState("");
+  const [draftNotes, setDraftNotes] = useState("");
+  const [addKind, setAddKind] = useState<AddId>("father");
+  const [addName, setAddName] = useState("");
+  const [addExisting, setAddExisting] = useState("");
+  const [newPersonName, setNewPersonName] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [search, setSearch] = useState("");
 
-  const clearCanvasSelection = useCallback(() => {
-    setClearSelectionKey((k) => k + 1);
-  }, []);
-
-  const closeSidePanel = useCallback(() => {
-    setShowAdd(false);
-    setSelected(null);
-    setSelectedEdge(null);
-    clearCanvasSelection();
-  }, [clearCanvasSelection]);
-
-  const openAddPerson = useCallback(() => {
-    setSelected(null);
-    setSelectedEdge(null);
-    setShowAdd(true);
-    clearCanvasSelection();
-  }, [clearCanvasSelection]);
-
-  const [editName, setEditName] = useState("");
-  const [editBirth, setEditBirth] = useState("");
-  const [editDeath, setEditDeath] = useState("");
-  const [editNotes, setEditNotes] = useState("");
-  const [edgeType, setEdgeType] = useState("relative");
-
-  const [newName, setNewName] = useState("");
-  const [newBirth, setNewBirth] = useState("");
-  const [newRelTo, setNewRelTo] = useState("");
-  const [newRelType, setNewRelType] = useState("parent");
-  const [linkToId, setLinkToId] = useState("");
-  const [linkType, setLinkType] = useState("parent");
-
-  const reload = useCallback(
-    async (opts?: { soft?: boolean; viewpointOverride?: string }) => {
-      if (authLoading || !vaultId) return;
-      const seq = ++fetchSeq.current;
-      if (!opts?.soft) setLoading(true);
-      const vp =
-        opts?.viewpointOverride !== undefined
-          ? opts.viewpointOverride
-          : viewpoint;
-      try {
-        const g = await fetchFamilyGraph(
-          apiRoot,
-          vp || undefined,
-          vaultId,
-          authHeaders()
-        );
-        if (seq !== fetchSeq.current) return;
-        setGraph(g);
-        setError(null);
-        const ids = new Set(g.persons.map((p) => p.id));
-        setViewpoint((prev) => {
-          if (prev && ids.has(prev)) return prev;
-          return g.viewpoint_person_id || g.persons[0]?.id || "";
-        });
-      } catch {
-        if (seq !== fetchSeq.current) return;
-        setError(
-          "Could not load the family tree. Check that the API is running."
-        );
-      } finally {
-        if (seq === fetchSeq.current) setLoading(false);
+  const load = useCallback(
+    async (nextViewpoint?: string) => {
+      setError(null);
+      const params = new URLSearchParams();
+      if (nextViewpoint) params.set("viewpoint", nextViewpoint);
+      const qs = params.toString();
+      const res = await apiFetch(`/family${qs ? `?${qs}` : ""}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Could not load the family tree");
       }
+      const json = (await res.json()) as FamilyGraph;
+      const relationships = (json.relationships ?? []).flatMap((rel) => {
+        if (rel.type === "parent" || rel.type === "spouse" || rel.type === "sibling") {
+          return [rel];
+        }
+        if (rel.type === "child") {
+          return [{ ...rel, type: "parent" }];
+        }
+        return [];
+      });
+      const next: FamilyGraph = {
+        persons: json.persons ?? [],
+        relationships,
+        vault: json.vault,
+        viewpoint_person_id: json.viewpoint_person_id,
+      };
+      setGraph(next);
+      const vp = next.viewpoint_person_id || next.persons[0]?.id || "";
+      setViewpoint(vp);
+      setSelectedId((current) =>
+        next.persons.some((person) => person.id === current) ? current : vp
+      );
+      return next;
     },
-    [apiRoot, vaultId, viewpoint, authLoading, authHeaders]
+    [apiFetch]
   );
 
-  // Load when vault is ready — do not re-run on every viewpoint tweak
   useEffect(() => {
-    if (authLoading) return;
-    if (!vaultId) {
-      setLoading(false);
-      setError("No vault selected. Sign out and sign in again.");
-      return;
-    }
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- vault/auth only
-  }, [apiRoot, vaultId, authLoading]);
+    if (!vaultId) return;
+    setLoading(true);
+    load()
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : "Could not load the family tree")
+      )
+      .finally(() => setLoading(false));
+  }, [vaultId, load]);
 
-  // Soft refresh when user picks a different viewpoint
-  const viewpointBootstrapped = useRef(false);
-  useEffect(() => {
-    viewpointBootstrapped.current = false;
-  }, [vaultId]);
-  useEffect(() => {
-    if (!viewpoint || authLoading || !vaultId) return;
-    if (!viewpointBootstrapped.current) {
-      viewpointBootstrapped.current = true;
-      return;
-    }
-    void reload({ soft: true, viewpointOverride: viewpoint });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewpoint]);
+  const persons = graph?.persons ?? [];
+  const relationships = graph?.relationships ?? [];
+  const byId = useMemo(
+    () => new Map(persons.map((person) => [person.id, person])),
+    [persons]
+  );
+  const selected = byId.get(selectedId) || null;
 
   useEffect(() => {
-    if (selected) {
-      setEditName(selected.name || "");
-      setEditBirth(
-        selected.birth_year != null ? String(selected.birth_year) : ""
-      );
-      setEditDeath(
-        selected.death_year != null ? String(selected.death_year) : ""
-      );
-      setEditNotes(selected.notes || "");
-    }
+    if (!selected) return;
+    setDraftName(selected.name || "");
+    setDraftSex(selected.sex || "");
+    setDraftBirth(selected.birth_year ? String(selected.birth_year) : "");
+    setDraftDeath(selected.death_year ? String(selected.death_year) : "");
+    setDraftNotes(selected.notes || "");
+    setConfirmDelete(false);
+    setAddName("");
+    setAddExisting("");
   }, [selected]);
 
+  const built = useMemo(
+    () => buildPedigree(persons.map((person) => person.id), relationships),
+    [persons, relationships]
+  );
+  const [arrange, setArrange] = useState<{ vault: string; data: TreeArrange } | null>(null);
   useEffect(() => {
-    if (selectedEdge) setEdgeType(selectedEdge.type || "parent");
-  }, [selectedEdge]);
+    if (!vaultId) return;
+    try {
+      const raw = localStorage.getItem(`virsa-tree-arrange:${vaultId}`);
+      const data = raw ? (JSON.parse(raw) as TreeArrange) : { unitOrder: [], members: {} };
+      setArrange({
+        vault: vaultId,
+        data: {
+          unitOrder: Array.isArray(data.unitOrder) ? data.unitOrder : [],
+          members: data.members && typeof data.members === "object" ? data.members : {},
+        },
+      });
+    } catch {
+      setArrange({ vault: vaultId, data: { unitOrder: [], members: {} } });
+    }
+  }, [vaultId]);
+  useEffect(() => {
+    if (!vaultId || !arrange || arrange.vault !== vaultId) return;
+    localStorage.setItem(`virsa-tree-arrange:${vaultId}`, JSON.stringify(arrange.data));
+  }, [arrange, vaultId]);
+  const pedigree = useMemo(
+    () => arrangePedigree(built, arrange?.vault === vaultId ? arrange.data : { unitOrder: [], members: {} }),
+    [built, arrange, vaultId]
+  );
+  const reorderUnits = (rowIndex: number, unitIds: string[]) => {
+    if (!vaultId) return;
+    setArrange((current) => {
+      const data = current?.vault === vaultId ? current.data : { unitOrder: [], members: {} };
+      const rows = arrangePedigree(built, data).generations.map((row, index) =>
+        index === rowIndex ? unitIds : row.map((unit) => unit.id)
+      );
+      return { vault: vaultId, data: { ...data, unitOrder: rows.flat() } };
+    });
+  };
+  const reorderMembers = (unitId: string, memberIds: string[]) => {
+    if (!vaultId) return;
+    setArrange((current) => {
+      const data = current?.vault === vaultId ? current.data : { unitOrder: [], members: {} };
+      return { vault: vaultId, data: { ...data, members: { ...data.members, [unitId]: memberIds } } };
+    });
+  };
+  const unplaced = persons.filter((person) => !pedigree.placed.has(person.id));
 
   useEffect(() => {
-    setLinkToId("");
-    setLinkType("parent");
-  }, [selected?.id]);
-
-  const softReload = () => reload({ soft: true });
+    const query = search.trim().toLowerCase();
+    if (!query) return;
+    const match = persons.find((person) => person.name.toLowerCase().includes(query));
+    if (!match) return;
+    document.getElementById(`tree-person-${match.id}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [search, persons]);
 
   const selectedLinks = useMemo(() => {
     if (!selected) return [];
-    return graph.relationships
+    return relationships
       .filter(
-        (r) =>
-          r.from_person_id === selected.id || r.to_person_id === selected.id
+        (rel) =>
+          rel.from_person_id === selected.id || rel.to_person_id === selected.id
       )
-      .map((r) => {
+      .map((rel) => {
         const otherId =
-          r.from_person_id === selected.id
-            ? r.to_person_id
-            : r.from_person_id;
-        const other = graph.persons.find((p) => p.id === otherId);
-        let role = r.type;
-        if (r.type === "parent") {
-          role =
-            r.from_person_id === selected.id
-              ? "parent of"
-              : "child of";
-        } else if (r.type === "spouse") {
-          role = "spouse of";
-        } else if (r.type === "sibling") {
-          role = "sibling of";
-        }
-        return { rel: r, other, role };
-      });
-  }, [selected, graph.relationships, graph.persons]);
-
-  const changePersonLink = async (relId: string, nextType: string) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`${apiRoot}/family/relationship/${relId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ type: nextType }),
-      });
-      if (!res.ok) throw new Error("Could not update relationship");
-      softReload();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Update failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const removePersonLink = async (relId: string) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`${apiRoot}/family/relationship/${relId}`, {
-        method: "DELETE",
-        headers: { ...authHeaders() },
-      });
-      if (!res.ok) throw new Error("Could not remove link");
-      softReload();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Remove failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const addPersonLink = async () => {
-    if (!selected || !linkToId) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`${apiRoot}/family/relationship`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({
-          from_person_id: selected.id,
-          to_person_id: linkToId,
-          type: linkType,
-          vault_id: vaultId,
-          certainty: 1.0,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(
-          typeof data.detail === "string" ? data.detail : "Could not add link"
-        );
-      }
-      setLinkToId("");
-      softReload();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Link failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const savePerson = async () => {
-    if (!selected) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(`${apiRoot}/family/member/${selected.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({
-          name: editName.trim(),
-          birth_year: editBirth ? Number(editBirth) : null,
-          death_year: editDeath ? Number(editDeath) : null,
-          notes: editNotes,
-        }),
-      });
-      if (!res.ok) throw new Error("Could not save person");
-      softReload();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Save failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const deletePerson = async () => {
-    if (!selected) return;
-    if (!confirm(`Remove ${selected.name} from the tree?`)) return;
-    setBusy(true);
-    try {
-      const res = await fetch(`${apiRoot}/family/member/${selected.id}`, {
-        method: "DELETE",
-        headers: { ...authHeaders() },
-      });
-      if (!res.ok) throw new Error("Could not delete person");
-      setSelected(null);
-      softReload();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Delete failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const saveEdge = async () => {
-    if (!selectedEdge) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `${apiRoot}/family/relationship/${selectedEdge.id}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json", ...authHeaders() },
-          body: JSON.stringify({ type: edgeType }),
-        }
-      );
-      if (!res.ok) throw new Error("Could not update relationship");
-      softReload();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Update failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const deleteEdge = async () => {
-    if (!selectedEdge) return;
-    setBusy(true);
-    try {
-      const res = await fetch(
-        `${apiRoot}/family/relationship/${selectedEdge.id}`,
-        { method: "DELETE", headers: { ...authHeaders() } }
-      );
-      if (!res.ok) throw new Error("Could not remove link");
-      setSelectedEdge(null);
-      softReload();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Delete failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const addPerson = async () => {
-    const name = newName.trim();
-    if (!name) return;
-    if (!vaultId) {
-      setError("No vault selected. Sign out and sign in again.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const birthYear = newBirth ? Number(newBirth) : undefined;
-      const res = await fetch(`${apiRoot}/family/member`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({
-          name,
-          birth_year: birthYear,
-          vault_id: vaultId,
-          related_to_person_id: newRelTo || undefined,
-          relationship: newRelType,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(
-          typeof data.detail === "string" ? data.detail : "Could not add person"
-        );
-      }
-      const newId = typeof data.id === "string" ? data.id : null;
-      // Optimistic: show the person immediately, then refresh from API
-      if (newId) {
-        const optimistic: Person = {
-          id: newId,
-          name,
-          birth_year: birthYear ?? null,
-          relationship: null,
-          kinship_label: null,
+          rel.from_person_id === selected.id ? rel.to_person_id : rel.from_person_id;
+        const other = byId.get(otherId);
+        let phrase = "Related to";
+        if (rel.type === "spouse") phrase = "Spouse of";
+        else if (rel.type === "sibling") phrase = "Sibling of";
+        else if (rel.type === "parent" && rel.from_person_id === selected.id)
+          phrase = "Parent of";
+        else if (rel.type === "parent") phrase = "Child of";
+        return {
+          id: rel.id,
+          phrase,
+          name: other?.name || "Someone",
         };
-        setGraph((prev) => ({
-          ...prev,
-          persons: prev.persons.some((p) => p.id === newId)
-            ? prev.persons
-            : [...prev.persons, optimistic],
-        }));
-        if (!viewpoint) setViewpoint(newId);
-      }
-      setNewName("");
-      setNewBirth("");
-      setNewRelTo("");
-      setNewRelType("relative");
-      setShowAdd(true);
-      setSelected(null);
-      setSelectedEdge(null);
-      softReload();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Add failed");
-    } finally {
-      setBusy(false);
-    }
-  };
+      });
+  }, [relationships, selected, byId]);
 
-  const panelOpen = Boolean(selected || selectedEdge || showAdd);
-  const showCanvas = graph.persons.length > 0;
-  const showEmpty = !loading && !showCanvas && !showAdd;
+  async function refresh(keepViewpoint = viewpoint) {
+    setSaving(true);
+    try {
+      await load(keepViewpoint);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not refresh the tree");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function savePerson() {
+    if (!selected) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/family/member/${selected.id}`, {
+        method: "PATCH",
+        json: {
+          name: draftName.trim() || selected.name,
+          sex: draftSex || null,
+          birth_year: draftBirth ? Number(draftBirth) : null,
+          death_year: draftDeath ? Number(draftDeath) : null,
+          notes: draftNotes,
+        },
+      });
+      if (!res.ok) throw new Error("Could not save this person");
+      await load(viewpoint);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not save this person");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addRelative() {
+    if (!selected) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const option = ADD_OPTIONS.find((item) => item.id === addKind)!;
+      if (addExisting) {
+        const body = {
+          ...edgeFor(addKind, selected.id, addExisting),
+          vault_id: vaultId,
+        };
+        const res = await apiFetch("/family/relationship", { method: "POST", json: body });
+        if (!res.ok) {
+          const detail = await res.json().catch(() => ({}));
+          throw new Error(detail.detail || "Could not add that relationship");
+        }
+        if (option.sex) {
+          const other = byId.get(addExisting);
+          if (other && !other.sex) {
+            await apiFetch(`/family/member/${addExisting}`, {
+              method: "PATCH",
+              json: { sex: option.sex },
+            });
+          }
+        }
+      } else if (addName.trim()) {
+        const res = await apiFetch("/family/member", {
+          method: "POST",
+          json: {
+            name: addName.trim(),
+            relationship: addKind,
+            related_to_person_id: selected.id,
+            sex: option.sex || null,
+            vault_id: vaultId,
+          },
+        });
+        if (!res.ok) throw new Error("Could not add that person");
+      } else {
+        throw new Error("Type a name or choose someone already in the family");
+      }
+      setAddName("");
+      setAddExisting("");
+      await load(viewpoint);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not add that relative");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addUnplaced() {
+    if (!newPersonName.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await apiFetch("/family/member", {
+        method: "POST",
+        json: {
+          name: newPersonName.trim(),
+          relationship: "relative",
+          vault_id: vaultId,
+        },
+      });
+      if (!res.ok) throw new Error("Could not add that person");
+      const created = await res.json();
+      setNewPersonName("");
+      await load(viewpoint);
+      if (created?.id) setSelectedId(created.id);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not add that person");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeLink(relationshipId: string) {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/family/relationship/${relationshipId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Could not remove that link");
+      await load(viewpoint);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not remove that link");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deletePerson() {
+    if (!selected) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`/family/member/${selected.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Could not delete this person");
+      setSelectedId("");
+      await load(viewpoint === selected.id ? "" : viewpoint);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not delete this person");
+    } finally {
+      setSaving(false);
+      setConfirmDelete(false);
+    }
+  }
+
+  function personCard(person: Person, framed = false) {
+    const active = person.id === selectedId;
+    const label = person.id === viewpoint ? "You are here" : person.kinship_label;
+    const query = search.trim().toLowerCase();
+    const match = query.length > 0 && person.name.toLowerCase().includes(query);
+    const dim = query.length > 0 && !match;
+    return (
+      <button
+        key={person.id}
+        type="button"
+        onClick={() => setSelectedId(person.id)}
+        id={`tree-person-${person.id}`}
+        data-person={person.id}
+        className={`cursor-grab text-left bg-white px-4 py-3 transition min-w-[150px] max-w-[210px] active:cursor-grabbing ${
+          framed ? "rounded-2xl border border-line" : ""
+        } ${active ? "bg-[#f3faf7] ring-2 ring-brass ring-inset" : "hover:bg-mist"} ${
+          match ? "ring-2 ring-brass/70 ring-inset" : ""
+        } ${dim ? "opacity-30" : ""}`}
+      >
+        {label && (
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brass-deep mb-1">
+            {label}
+          </div>
+        )}
+        <div className="font-display text-xl text-ink leading-tight">{person.name}</div>
+        {yearsOf(person) && (
+          <div className="text-xs text-ink-soft mt-1 tabular-nums">{yearsOf(person)}</div>
+        )}
+      </button>
+    );
+  }
+
+  function CoupleBox({ unit }: { unit: CoupleUnit }) {
+    const people = unit.members.map((id) => byId.get(id)).filter((person): person is Person => !!person);
+    return (
+      <div
+        data-unit={unit.id}
+        className={`relative z-10 flex items-stretch rounded-2xl border bg-white shadow-sm overflow-hidden ${
+          unit.members.includes(selectedId) ? "border-brass" : "border-line"
+        }`}
+      >
+        {people.map((person, index) => (
+          <div key={person.id} className="flex items-stretch">
+            {index > 0 && <div className="w-px bg-line" />}
+            {personCard(person)}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const system = graph?.vault?.kinship_system || "punjabi";
 
   return (
     <RequireAuth>
-      <Sidebar>
-        <div className="flex flex-wrap items-end justify-between gap-4 mb-6">
+      <Sidebar wide>
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3 mb-4">
           <div>
-            <p className="label-eyebrow mb-2">Connections</p>
-            <h1 className="font-display text-4xl text-ink">Family tree</h1>
-            <p className="text-ink-soft mt-2 max-w-xl leading-relaxed">
-              Top-down pedigree: parents above children, spouses beside each
-              other
-              {graph.vault?.kinship_system
-                ? ` · ${graph.vault.kinship_system} kinship labels`
-                : ""}
-              . Unlinked people sit to the side until you connect them.
-            </p>
+            <p className="label-eyebrow mb-1">Family tree</p>
+            <h1 className="font-display text-3xl md:text-4xl text-ink">
+              {graph?.vault?.name || "Your family"}
+            </h1>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            {graph.persons.length > 0 && (
-              <label className="text-sm text-ink-soft">
-                Viewpoint
-                <select
-                  value={viewpoint}
-                  onChange={(e) => setViewpoint(e.target.value)}
-                  className="field ml-2 !w-auto !inline-block !py-2"
-                >
-                  {graph.persons.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={openAddPerson}
+          <label className="text-sm text-ink-soft min-w-[240px]">
+            <span className="block mb-1 font-medium text-ink">Names as seen by</span>
+            <select
+              className="field"
+              value={viewpoint}
+              onChange={(event) => {
+                const next = event.target.value;
+                setViewpoint(next);
+                setSelectedId(next);
+                void refresh(next);
+              }}
             >
-              <Plus className="w-4 h-4" /> Add person
-            </button>
-          </div>
+              {persons.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.name}
+                </option>
+              ))}
+            </select>
+            <span className="block mt-1 text-xs capitalize">{system} kinship</span>
+          </label>
         </div>
 
         {error && (
@@ -1045,426 +505,506 @@ export default function Page() {
           </p>
         )}
 
-        <div className="flex gap-4 items-stretch min-h-[min(80vh,720px)]">
-          <div
-            className={`rounded-3xl border border-line bg-white overflow-hidden relative ${
-              panelOpen ? "flex-1 min-w-0" : "w-full"
-            }`}
-            style={{ height: "min(80vh, 720px)" }}
-          >
-            {loading && (
-              <p className="p-8 text-ink-soft absolute inset-0 z-10 bg-white/80">
-                Loading tree…
-              </p>
-            )}
-            {showEmpty && (
-              <div className="h-full flex flex-col items-center justify-center text-center px-6">
-                <p className="text-ink-soft mb-2">
-                  No people in this vault yet.
-                </p>
-                <p className="text-sm text-ink-soft mb-4 max-w-sm">
-                  Record a story (people are extracted automatically) or add
-                  someone by hand.
-                </p>
-                <div className="flex gap-3">
-                  <a href="/record" className="btn-ghost">
-                    Record a story
-                  </a>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={openAddPerson}
-                  >
-                    Add person
-                  </button>
-                </div>
-              </div>
-            )}
-            {showCanvas && (
-              <FamilyTreeCanvas
-                persons={graph.persons}
-                relationships={graph.relationships}
-                apiRoot={apiRoot}
-                vaultId={vaultId}
-                viewpointId={viewpoint || undefined}
-                onRefresh={softReload}
-                clearSelectionKey={clearSelectionKey}
-                onSelectPerson={(p) => {
-                  setSelected(p);
-                  if (p) {
-                    setSelectedEdge(null);
-                    setShowAdd(false);
-                  }
-                }}
-                onSelectEdge={(e) => {
-                  setSelectedEdge(e);
-                  if (e) {
-                    setSelected(null);
-                    setShowAdd(false);
-                  }
-                }}
-              />
-            )}
-            {!showCanvas && showAdd && (
-              <div className="h-full flex items-center justify-center text-ink-soft text-sm px-6 text-center">
-                Fill in the form on the right to add the first person.
-              </div>
-            )}
-          </div>
+        {loading && <p className="text-ink-soft">Loading the family…</p>}
 
-          {panelOpen && (
-            <aside className="w-full sm:w-[320px] shrink-0 rounded-3xl border border-line bg-white p-5 h-[min(80vh,720px)] overflow-y-auto">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-display text-2xl text-ink">
-                  {showAdd
-                    ? "Add person"
-                    : selected
-                      ? "Edit person"
-                      : "Edit link"}
-                </h2>
+        {!loading && persons.length === 0 && (
+          <div className="rounded-3xl border border-dashed border-line bg-white p-10 max-w-xl">
+            <h2 className="font-display text-3xl text-ink mb-2">Start with one person</h2>
+            <p className="text-ink-soft mb-5">
+              Add yourself, a parent, or whoever the first story is about. You can attach
+              everyone else from their card.
+            </p>
+            <div className="flex gap-2">
+              <input
+                className="field"
+                placeholder="Name"
+                value={newPersonName}
+                onChange={(event) => setNewPersonName(event.target.value)}
+              />
+              <button type="button" className="btn-primary shrink-0" onClick={() => void addUnplaced()}>
+                <Plus className="w-4 h-4" /> Add
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!loading && persons.length > 0 && (
+          <div className="grid lg:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
+            <div className="min-w-0 flex flex-col gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-ink-soft">
+                  {pedigree.placed.size} on the tree
+                  {unplaced.length ? ` · ${unplaced.length} still to place` : ""}
+                  <span className="hidden sm:inline"> · drag a card sideways to rearrange its row</span>
+                </p>
+                <input
+                  className="field max-w-xs"
+                  placeholder="Find a person"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </div>
+              <section className="overflow-auto rounded-3xl border border-line bg-[#f7faf8] min-h-[72vh] lg:min-h-[calc(100vh-9rem)]">
+                {pedigree.generations.length === 0 ? (
+                  <p className="text-ink-soft text-center p-10">
+                    No links yet. Open someone and add a parent, spouse, sibling, or child.
+                  </p>
+                ) : (
+                  <GenerationTree
+                    pedigree={pedigree}
+                    renderUnit={(unit) => <CoupleBox unit={unit} />}
+                    onReorderUnits={reorderUnits}
+                    onReorderMembers={reorderMembers}
+                  />
+                )}
+              </section>
+
+              <div className="flex gap-2 max-w-md">
+                <input
+                  className="field"
+                  placeholder="Add someone not linked yet"
+                  value={newPersonName}
+                  onChange={(event) => setNewPersonName(event.target.value)}
+                />
                 <button
                   type="button"
-                  className="p-1.5 rounded-lg text-ink-soft hover:bg-stone"
-                  onClick={closeSidePanel}
-                  aria-label="Close"
+                  className="btn-ghost shrink-0"
+                  disabled={saving}
+                  onClick={() => void addUnplaced()}
                 >
-                  <X className="w-4 h-4" />
+                  Add
                 </button>
               </div>
-
-              {showAdd && (
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                      Name
-                    </label>
-                  <input
-                    className="field"
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void addPerson();
-                      }
-                    }}
-                    placeholder="Full name"
-                    autoFocus
-                  />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                      Birth year
-                    </label>
-                    <input
-                      className="field"
-                      value={newBirth}
-                      onChange={(e) => setNewBirth(e.target.value)}
-                      placeholder="Optional"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                      Link to (optional)
-                    </label>
-                    <select
-                      className="field"
-                      value={newRelTo}
-                      onChange={(e) => setNewRelTo(e.target.value)}
-                    >
-                      <option value="">No link yet</option>
-                      {graph.persons.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {newRelTo && (
-                    <div>
-                      <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                        Relationship
-                      </label>
-                      <select
-                        className="field"
-                        value={newRelType}
-                        onChange={(e) => setNewRelType(e.target.value)}
-                      >
-                        {REL_TYPES.map((t) => (
-                          <option key={t.value} value={t.value}>
-                            {t.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    className="btn-primary w-full"
-                    disabled={busy || !newName.trim()}
-                    onClick={() => void addPerson()}
-                  >
-                    {busy ? "Saving…" : "Add to tree"}
-                  </button>
-                  <p className="text-xs text-ink-soft">
-                    Leave “Link to” empty if you’re unsure — they’ll stay on the
-                    tree as an unattached relative. Multiple spouses are fine.
-                  </p>
+              {unplaced.length > 0 && (
+              <section className="rounded-3xl border border-dashed border-line p-5">
+                <h2 className="font-display text-2xl text-ink mb-1">Not on the tree yet</h2>
+                <p className="text-sm text-ink-soft mb-4 max-w-xl">
+                  These people are in the vault, but no parent, spouse, sibling, or child
+                  link connects them. Open a card and add that link to pull them into the tree.
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {unplaced.map((person) => personCard(person, true))}
                 </div>
+              </section>
               )}
+            </div>
 
-              {selected && !showAdd && (
-                <div className="space-y-3">
+            <aside className="rounded-3xl border border-line bg-white p-5 lg:sticky lg:top-6">
+              {!selected && <p className="text-ink-soft">Select someone to edit their place in the family.</p>}
+              {selected && (
+                <div className="space-y-5">
                   <div>
-                    <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                      Name
-                    </label>
-                    <input
-                      className="field"
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                        Birth
-                      </label>
-                      <input
-                        className="field"
-                        value={editBirth}
-                        onChange={(e) => setEditBirth(e.target.value)}
-                        placeholder="Year"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                        Death
-                      </label>
-                      <input
-                        className="field"
-                        value={editDeath}
-                        onChange={(e) => setEditDeath(e.target.value)}
-                        placeholder="Year"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                      Notes
-                    </label>
-                    <textarea
-                      className="field resize-y min-h-[80px]"
-                      value={editNotes}
-                      onChange={(e) => setEditNotes(e.target.value)}
-                    />
-                  </div>
-                  {selected.kinship_label && (
-                    <p className="text-xs text-ink-soft">
-                      From viewpoint:{" "}
-                      <span className="font-medium text-brass-deep">
-                        {selected.kinship_label}
-                      </span>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brass-deep">
+                      {selected.id === viewpoint ? "Viewpoint" : selected.kinship_label || "Relative"}
                     </p>
-                  )}
-
-                  <div className="pt-2 border-t border-line space-y-2">
-                    <p className="text-xs font-medium text-ink-soft uppercase tracking-wide">
-                      Relationships
-                    </p>
-                    {selectedLinks.length === 0 ? (
-                      <p className="text-xs text-ink-soft">
-                        Unattached — add a link below, or leave as a relative.
-                      </p>
-                    ) : (
-                      selectedLinks.map(({ rel, other, role }) => (
-                        <div
-                          key={rel.id}
-                          className="rounded-xl border border-line p-2.5 space-y-2"
-                        >
-                          <p className="text-sm text-ink">
-                            <span className="text-ink-soft">{role}</span>{" "}
-                            <span className="font-medium">
-                              {other?.name || "Unknown"}
-                            </span>
-                          </p>
-                          <div className="flex gap-2">
-                            <select
-                              className="field !py-1.5 text-sm flex-1"
-                              value={
-                                rel.type === "parent" &&
-                                rel.from_person_id === selected.id
-                                  ? "parent"
-                                  : rel.type === "parent"
-                                    ? "child"
-                                    : rel.type
-                              }
-                              disabled={busy}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                if (v === "relative") {
-                                  void removePersonLink(rel.id);
-                                } else if (
-                                  (rel.type === "parent" &&
-                                    rel.from_person_id === selected.id &&
-                                    v === "child") ||
-                                  (rel.type === "parent" &&
-                                    rel.to_person_id === selected.id &&
-                                    v === "parent")
-                                ) {
-                                  // Flip parent direction: delete + recreate
-                                  void (async () => {
-                                    setBusy(true);
-                                    try {
-                                      await fetch(
-                                        `${apiRoot}/family/relationship/${rel.id}`,
-                                        {
-                                          method: "DELETE",
-                                          headers: { ...authHeaders() },
-                                        }
-                                      );
-                                      await fetch(
-                                        `${apiRoot}/family/relationship`,
-                                        {
-                                          method: "POST",
-                                          headers: {
-                                            "Content-Type": "application/json",
-                                            ...authHeaders(),
-                                          },
-                                          body: JSON.stringify({
-                                            from_person_id: selected.id,
-                                            to_person_id: other?.id,
-                                            type: v,
-                                            vault_id: vaultId,
-                                          }),
-                                        }
-                                      );
-                                      softReload();
-                                    } finally {
-                                      setBusy(false);
-                                    }
-                                  })();
-                                } else {
-                                  void changePersonLink(rel.id, v);
-                                }
-                              }}
-                            >
-                              {EDIT_REL_TYPES.map((t) => (
-                                <option key={t.value} value={t.value}>
-                                  {t.label}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
-                      ))
-                    )}
-
-                    <div className="rounded-xl border border-dashed border-line p-2.5 space-y-2">
-                      <p className="text-xs text-ink-soft">Add link</p>
-                      <select
-                        className="field !py-1.5 text-sm"
-                        value={linkToId}
-                        onChange={(e) => setLinkToId(e.target.value)}
-                      >
-                        <option value="">Choose person…</option>
-                        {graph.persons
-                          .filter((p) => p.id !== selected.id)
-                          .map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name}
-                            </option>
-                          ))}
-                      </select>
-                      <select
-                        className="field !py-1.5 text-sm"
-                        value={linkType}
-                        onChange={(e) => setLinkType(e.target.value)}
-                      >
-                        {REL_TYPES.map((t) => (
-                          <option key={t.value} value={t.value}>
-                            {t.label}
-                          </option>
-                        ))}
-                      </select>
+                    <h2 className="font-display text-3xl text-ink leading-tight mt-1">{selected.name}</h2>
+                    {selected.id !== viewpoint && (
                       <button
                         type="button"
-                        className="btn-ghost w-full !py-1.5 text-sm"
-                        disabled={busy || !linkToId}
-                        onClick={() => void addPersonLink()}
+                        className="text-sm font-semibold text-brass-deep mt-2"
+                        onClick={() => {
+                          setViewpoint(selected.id);
+                          void refresh(selected.id);
+                        }}
                       >
-                        Add relationship
+                        Show every name from {selected.name.split(" ")[0]}&apos;s view
                       </button>
-                    </div>
+                    )}
                   </div>
 
-                  <button
-                    type="button"
-                    className="btn-primary w-full"
-                    disabled={busy}
-                    onClick={() => void savePerson()}
-                  >
-                    {busy ? "Saving…" : "Save changes"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-ghost w-full text-[#9b2c2c]"
-                    disabled={busy}
-                    onClick={() => void deletePerson()}
-                  >
-                    <Trash2 className="w-4 h-4" /> Remove from tree
-                  </button>
-                  <p className="text-xs text-ink-soft pt-2">
-                    Tip: drag between people to link. Unsure? Leave them
-                    unattached — you can fix it here anytime.
-                  </p>
-                </div>
-              )}
-
-              {selectedEdge && !showAdd && (
-                <div className="space-y-3">
-                  <p className="text-sm text-ink-soft">
-                    Change how these two people are linked, or remove a bad
-                    auto-suggestion.
-                  </p>
+                  <label className="block text-sm">
+                    <span className="text-ink-soft">Name</span>
+                    <input className="field mt-1" value={draftName} onChange={(e) => setDraftName(e.target.value)} />
+                  </label>
                   <div>
-                    <label className="text-xs font-medium text-ink-soft mb-1.5 block">
-                      Relationship type
+                    <span className="text-sm text-ink-soft">Sex</span>
+                    <div className="grid grid-cols-3 gap-2 mt-1">
+                      {[
+                        ["male", "Male"],
+                        ["female", "Female"],
+                        ["", "Skip"],
+                      ].map(([value, label]) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => setDraftSex(value)}
+                          className={`rounded-xl border px-2 py-2 text-sm ${
+                            draftSex === value
+                              ? "border-brass bg-mist text-ink font-semibold"
+                              : "border-line text-ink-soft"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-ink-soft mt-1">
+                      Sex decides Dada or Dadi, Chacha or Bhua, and the rest.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-sm">
+                      <span className="text-ink-soft">Born</span>
+                      <input
+                        className="field mt-1"
+                        inputMode="numeric"
+                        value={draftBirth}
+                        onChange={(e) => setDraftBirth(e.target.value)}
+                      />
                     </label>
+                    <label className="text-sm">
+                      <span className="text-ink-soft">Died</span>
+                      <input
+                        className="field mt-1"
+                        inputMode="numeric"
+                        value={draftDeath}
+                        onChange={(e) => setDraftDeath(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <label className="block text-sm">
+                    <span className="text-ink-soft">Notes</span>
+                    <textarea
+                      className="field mt-1 resize-y"
+                      rows={3}
+                      value={draftNotes}
+                      onChange={(e) => setDraftNotes(e.target.value)}
+                    />
+                  </label>
+                  <button type="button" className="btn-primary w-full" disabled={saving} onClick={() => void savePerson()}>
+                    Save details
+                  </button>
+
+                  <div className="border-t border-line pt-4 space-y-3">
+                    <h3 className="font-semibold text-ink">Add someone to {selected.name.split(" ")[0]}</h3>
+                    <p className="text-xs text-ink-soft leading-relaxed">
+                      Add a parent&apos;s brother or sister and they appear beside that parent,
+                      under the grandparents. Their spouse sits in the same box.
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {ADD_OPTIONS.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => setAddKind(option.id)}
+                          className={`rounded-xl border px-2 py-2 text-sm ${
+                            addKind === option.id
+                              ? "border-brass bg-mist font-semibold text-ink"
+                              : "border-line text-ink-soft"
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      className="field"
+                      placeholder="New person's name"
+                      value={addName}
+                      onChange={(e) => {
+                        setAddName(e.target.value);
+                        if (e.target.value) setAddExisting("");
+                      }}
+                    />
                     <select
                       className="field"
-                      value={edgeType}
-                      onChange={(e) => setEdgeType(e.target.value)}
+                      value={addExisting}
+                      onChange={(e) => {
+                        setAddExisting(e.target.value);
+                        if (e.target.value) setAddName("");
+                      }}
                     >
-                      {EDIT_REL_TYPES.map((t) => (
-                        <option key={t.value} value={t.value}>
-                          {t.label}
-                        </option>
-                      ))}
+                      <option value="">Or choose someone already here</option>
+                      {persons
+                        .filter((person) => person.id !== selected.id)
+                        .map((person) => (
+                          <option key={person.id} value={person.id}>
+                            {person.name}
+                          </option>
+                        ))}
                     </select>
+                    <button type="button" className="btn-accent w-full" disabled={saving} onClick={() => void addRelative()}>
+                      <Plus className="w-4 h-4" />
+                      Add {ADD_OPTIONS.find((option) => option.id === addKind)?.label.toLowerCase()}
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    className="btn-primary w-full"
-                    disabled={busy}
-                    onClick={() => void saveEdge()}
-                  >
-                    {busy ? "Saving…" : "Update link"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-ghost w-full text-[#9b2c2c]"
-                    disabled={busy}
-                    onClick={() => void deleteEdge()}
-                  >
-                    <Trash2 className="w-4 h-4" /> Remove link
-                  </button>
+
+                  {selectedLinks.length > 0 && (
+                    <ul className="space-y-2 border-t border-line pt-4">
+                      {selectedLinks.map((link) => (
+                        <li key={link.id} className="flex items-center justify-between gap-2 text-sm">
+                          <span>
+                            <span className="text-ink-soft">{link.phrase}</span>{" "}
+                            <span className="text-ink">{link.name}</span>
+                          </span>
+                          <button
+                            type="button"
+                            className="text-ink-soft hover:text-[#9b2c2c]"
+                            onClick={() => void removeLink(link.id)}
+                            aria-label={`Remove link with ${link.name}`}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <div className="border-t border-line pt-4">
+                    {confirmDelete ? (
+                      <div className="flex gap-2">
+                        <button type="button" className="btn-ghost flex-1" onClick={() => setConfirmDelete(false)}>
+                          Keep
+                        </button>
+                        <button
+                          type="button"
+                          className="flex-1 rounded-xl bg-[#9b2c2c] text-white text-sm font-semibold px-3 py-2"
+                          onClick={() => void deletePerson()}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="text-sm text-[#9b2c2c]"
+                        onClick={() => setConfirmDelete(true)}
+                      >
+                        Delete this person
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </aside>
-          )}
-        </div>
+          </div>
+        )}
       </Sidebar>
     </RequireAuth>
+  );
+}
+
+function GenerationTree({
+  pedigree,
+  renderUnit,
+  onReorderUnits,
+  onReorderMembers,
+}: {
+  pedigree: ReturnType<typeof buildPedigree>;
+  renderUnit: (unit: CoupleUnit) => ReactNode;
+  onReorderUnits: (rowIndex: number, unitIds: string[]) => void;
+  onReorderMembers: (unitId: string, memberIds: string[]) => void;
+}) {
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [paths, setPaths] = useState<string[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const reorderUnitsRef = useRef(onReorderUnits);
+  const reorderMembersRef = useRef(onReorderMembers);
+  reorderUnitsRef.current = onReorderUnits;
+  reorderMembersRef.current = onReorderMembers;
+
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>, rowIndex: number, unit: CoupleUnit) => {
+    if (event.button !== 0) return;
+    const personId = (event.target as HTMLElement).closest("[data-person]")?.getAttribute("data-person");
+    const unitEl = event.currentTarget.querySelector("[data-unit]");
+    const rowEl = event.currentTarget.parentElement;
+    if (!(unitEl instanceof HTMLElement) || !rowEl) return;
+    const originX = event.clientX;
+    const originY = event.clientY;
+    let mode: "pending" | "members" | "units" = "pending";
+    let members = [...unit.members];
+    let units = pedigree.generations[rowIndex].map((item) => item.id);
+
+    const slotAmong = (nodes: Element[], clientX: number, id: string, attr: string) => {
+      const others = nodes.filter((node) => node.getAttribute(attr) !== id);
+      let insert = others.length;
+      for (let index = 0; index < others.length; index += 1) {
+        const rect = others[index].getBoundingClientRect();
+        if (clientX < rect.left + rect.width / 2) {
+          insert = index;
+          break;
+        }
+      }
+      return insert;
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      const dx = Math.abs(ev.clientX - originX);
+      const dy = Math.abs(ev.clientY - originY);
+      if (mode === "pending") {
+        if (dx < 8 && dy < 8) return;
+        const rect = unitEl.getBoundingClientRect();
+        const inside =
+          ev.clientX >= rect.left &&
+          ev.clientX <= rect.right &&
+          ev.clientY >= rect.top &&
+          ev.clientY <= rect.bottom;
+        mode = inside && unit.members.length > 1 ? "members" : "units";
+        setActiveId(unit.id);
+      }
+      if (mode === "members" && personId) {
+        const rect = unitEl.getBoundingClientRect();
+        if (ev.clientX < rect.left - 28 || ev.clientX > rect.right + 28) {
+          mode = "units";
+        } else {
+          const count = Math.max(1, members.length);
+          const slot = Math.min(
+            count - 1,
+            Math.max(0, Math.floor(((ev.clientX - rect.left) / Math.max(rect.width, 1)) * count))
+          );
+          const from = members.indexOf(personId);
+          if (from >= 0 && from !== slot) {
+            const next = [...members];
+            next.splice(from, 1);
+            next.splice(slot, 0, personId);
+            members = next;
+            reorderMembersRef.current(unit.id, next);
+          }
+          return;
+        }
+      }
+      const insert = slotAmong([...rowEl.querySelectorAll(":scope > [data-drag-unit]")], ev.clientX, unit.id, "data-drag-unit");
+      const next = units.filter((id) => id !== unit.id);
+      next.splice(insert, 0, unit.id);
+      if (next.join("|") !== units.join("|")) {
+        units = next;
+        reorderUnitsRef.current(rowIndex, next);
+      }
+    };
+
+    const onUp = () => {
+      setActiveId(null);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      if (mode === "pending") return;
+      const stopClick = (click: Event) => {
+        click.preventDefault();
+        click.stopPropagation();
+        window.removeEventListener("click", stopClick, true);
+      };
+      window.addEventListener("click", stopClick, true);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const measure = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const origin = canvas.getBoundingClientRect();
+    const box = (id: string) => {
+      const el = canvas.querySelector(`[data-unit="${CSS.escape(id)}"]`);
+      if (!(el instanceof HTMLElement)) return null;
+      const rect = el.getBoundingClientRect();
+      return {
+        cx: rect.left - origin.left + rect.width / 2,
+        top: rect.top - origin.top,
+        bottom: rect.top - origin.top + rect.height,
+      };
+    };
+    const personBox = (id: string) => {
+      const el = canvas.querySelector(`[data-person="${CSS.escape(id)}"]`);
+      if (!(el instanceof HTMLElement)) return null;
+      const rect = el.getBoundingClientRect();
+      return {
+        cx: rect.left - origin.left + rect.width / 2,
+        top: rect.top - origin.top,
+        bottom: rect.top - origin.top + rect.height,
+      };
+    };
+    const groups = new Map<string, { parent: NonNullable<ReturnType<typeof box>>; children: NonNullable<ReturnType<typeof personBox>>[] }>();
+    for (const link of pedigree.links) {
+      const parent = box(link.parentId);
+      const child = personBox(link.childPersonId);
+      if (!parent || !child) continue;
+      const group = groups.get(link.parentId) || { parent, children: [] };
+      if (!group.children.some((item) => item.cx === child.cx && item.top === child.top)) {
+        group.children.push(child);
+      }
+      groups.set(link.parentId, group);
+    }
+    const brackets = [...groups.values()]
+      .map((group) => ({
+        ...group,
+        left: Math.min(group.parent.cx, ...group.children.map((child) => child.cx)),
+        right: Math.max(group.parent.cx, ...group.children.map((child) => child.cx)),
+        lane: 0,
+      }))
+      .sort((a, b) => a.left - b.left || a.parent.cx - b.parent.cx);
+    const laneEnds: number[] = [];
+    for (const bracket of brackets) {
+      let lane = laneEnds.findIndex((end) => bracket.left > end + 12);
+      if (lane < 0) {
+        lane = laneEnds.length;
+        laneEnds.push(bracket.right);
+      } else {
+        laneEnds[lane] = Math.max(laneEnds[lane], bracket.right);
+      }
+      bracket.lane = lane;
+    }
+    const laneCount = Math.max(1, laneEnds.length);
+    const next: string[] = [];
+    for (const bracket of brackets) {
+      const childTop = Math.min(...bracket.children.map((child) => child.top));
+      const gap = Math.max(28, childTop - bracket.parent.bottom);
+      const railY = bracket.parent.bottom + (gap * (bracket.lane + 1)) / (laneCount + 1);
+      next.push(`M ${bracket.parent.cx} ${bracket.parent.bottom} V ${railY}`);
+      next.push(`M ${bracket.left} ${railY} H ${bracket.right}`);
+      for (const child of bracket.children) {
+        next.push(`M ${child.cx} ${railY} V ${child.top}`);
+      }
+    }
+    for (const group of pedigree.siblingBars) {
+      const boxes = group.map(box).filter((item): item is NonNullable<ReturnType<typeof box>> => !!item);
+      if (boxes.length < 2) continue;
+      const left = Math.min(...boxes.map((item) => item.cx));
+      const right = Math.max(...boxes.map((item) => item.cx));
+      const y = Math.min(...boxes.map((item) => item.top)) - 18;
+      next.push(`M ${left} ${y} H ${right}`);
+      for (const item of boxes) next.push(`M ${item.cx} ${y} V ${item.top}`);
+    }
+    setPaths(next);
+  }, [pedigree]);
+
+  useLayoutEffect(() => {
+    measure();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(canvas);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [measure]);
+
+  return (
+    <div ref={canvasRef} className="relative mx-auto min-w-max px-8 py-10">
+      <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
+        {paths.map((d, index) => (
+          <path key={index} d={d} fill="none" stroke="#9bb5ad" strokeWidth="1.5" />
+        ))}
+      </svg>
+      <div className="relative z-10 flex flex-col items-center gap-16">
+        {pedigree.generations.map((row, index) => (
+          <div key={`row-${index}`} className="flex items-start justify-center gap-8">
+            {row.map((unit) => (
+              <div
+                key={unit.id}
+                data-drag-unit={unit.id}
+                className={`touch-none select-none transition-shadow duration-200 ${
+                  activeId === unit.id ? "z-20 scale-[1.02] rounded-2xl shadow-lg ring-2 ring-brass" : ""
+                }`}
+                onPointerDown={(event) => startDrag(event, index, unit)}
+              >
+                {renderUnit(unit)}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

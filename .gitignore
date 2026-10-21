@@ -1,5 +1,7 @@
 .env
 backend/uploads/
+backend/logs/
+backend/backups/
 backend/.venv/
 .venv/
 venv/

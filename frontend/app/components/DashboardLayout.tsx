@@ -71,8 +71,10 @@ function NavLinks({
 
 export default function DashboardLayout({
   children,
+  wide = false,
 }: {
   children: React.ReactNode;
+  wide?: boolean;
 }) {
   const pathname = usePathname();
   const { user, logout, vaults, vaultId, setVaultId } = useAuth();
@@ -184,7 +186,9 @@ export default function DashboardLayout({
 
       <main className="flex-1 min-w-0 overflow-y-auto">
         <div className="md:hidden h-14" />
-        <div className="max-w-6xl mx-auto px-5 sm:px-8 py-8 md:py-12">{children}</div>
+        <div className={wide ? "w-full px-4 sm:px-6 py-4 md:py-5" : "max-w-6xl mx-auto px-5 sm:px-8 py-8 md:py-12"}>
+          {children}
+        </div>
       </main>
     </div>
   );

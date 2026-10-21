@@ -5,6 +5,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Calendar, Mic, Search } from "lucide-react";
 import Sidebar from "../components/DashboardLayout";
+import Chronicle, {
+  chronicleSpan,
+  type ChronicleMoment,
+  type MomentDraft,
+} from "../components/Chronicle";
 import { RequireAuth } from "../components/RequireAuth";
 import { useAuth } from "../lib/auth";
 
@@ -26,17 +31,24 @@ type MasterEvent = {
   person_name?: string;
   person_id?: string;
   description?: string;
+  kind?: string;
+  artifact_type?: string;
+  category?: string;
+  location?: string;
+  place?: string;
+  source_story_id?: string | null;
 };
 
 export default function TimelineHomePage() {
-  const { vaultId, apiFetch } = useAuth();
+  const { vaultId, vaults, apiFetch } = useAuth();
+  const canEdit = (vaults.find((vault) => vault.id === vaultId)?.role ?? "owner") !== "viewer";
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortKey>("recent");
   const [people, setPeople] = useState<PersonRow[]>([]);
   const [master, setMaster] = useState<MasterEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"people" | "vault">("people");
+  const [tab, setTab] = useState<"people" | "vault">("vault");
 
   useEffect(() => {
     if (!vaultId) return;
@@ -70,30 +82,58 @@ export default function TimelineHomePage() {
     return list;
   }, [people, search, sort]);
 
+  async function saveMoment(moment: ChronicleMoment, draft: MomentDraft) {
+    if (!moment.id) throw new Error("This moment cannot be edited");
+    const res = await apiFetch(`/timeline/moments/${encodeURIComponent(moment.id)}`, {
+      method: "PATCH",
+      json: draft,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const detail = body.detail;
+      throw new Error(typeof detail === "string" ? detail : "Could not save this moment");
+    }
+    const saved = (await res.json()) as ChronicleMoment;
+    setMaster((current) =>
+      current.map((event) =>
+        event.id === moment.id ? ({ ...event, ...saved } as MasterEvent) : event
+      )
+    );
+  }
+
+  const span = chronicleSpan(master);
+  const voices = new Set(master.map((event) => event.person_name).filter(Boolean)).size;
+  const familyLine = loading
+    ? "Gathering the years recorded in this vault."
+    : master.length === 0
+      ? "Archive a story and the years will gather here, one life beside another."
+      : span.first && span.last
+        ? `From ${span.first} to ${span.last}. ${master.length} moment${master.length === 1 ? "" : "s"} across ${voices} ${voices === 1 ? "life" : "lives"}.`
+        : `${master.length} moment${master.length === 1 ? "" : "s"} are waiting for a year.`;
+
   return (
     <RequireAuth>
       <Sidebar>
-        <p className="label-eyebrow mb-3">Life events</p>
-        <h1 className="font-display text-4xl text-ink mb-3">Family timelines</h1>
-        <p className="text-ink-soft mb-8 max-w-2xl leading-relaxed">
-          Each relative has one timeline — or view the whole vault woven together
-          by year.
+        <p className="label-eyebrow mb-3">The family chronicle</p>
+        <h1 className="font-display text-5xl text-ink mb-3 max-w-3xl">The family story</h1>
+        <p className="text-lg text-ink-soft mb-8 max-w-xl leading-relaxed">
+          {familyLine}
         </p>
 
-        <div className="flex gap-2 mb-6">
-          <button
-            type="button"
-            onClick={() => setTab("people")}
-            className={tab === "people" ? "btn-primary" : "btn-ghost"}
-          >
-            By person
-          </button>
+        <div className="flex gap-2 mb-2">
           <button
             type="button"
             onClick={() => setTab("vault")}
             className={tab === "vault" ? "btn-primary" : "btn-ghost"}
           >
-            Vault timeline
+            Family story
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("people")}
+            className={tab === "people" ? "btn-primary" : "btn-ghost"}
+          >
+            Each life
           </button>
         </div>
 
@@ -103,37 +143,11 @@ export default function TimelineHomePage() {
           ) : master.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-line p-10 text-center">
               <p className="text-ink-soft">
-                No confirmed events yet — archive a story to grow the vault
-                timeline.
+                The chronicle is empty. Archive a story and the first year will open it.
               </p>
             </div>
           ) : (
-            <ol className="relative border-l border-line ml-3 space-y-6 mb-10">
-              {master.map((ev) => (
-                <li key={ev.id} className="pl-6 relative">
-                  <span className="absolute -left-1.5 top-1.5 w-3 h-3 rounded-full bg-brass" />
-                  <p className="text-xs font-semibold text-brass-deep">
-                    {ev.year ?? "Year unknown"}
-                    {ev.person_name ? ` · ${ev.person_name}` : ""}
-                  </p>
-                  <h3 className="font-display text-xl text-ink mt-1">
-                    {ev.title || ev.event}
-                  </h3>
-                  {ev.description && (
-                    <p className="text-sm text-ink-soft mt-1">{ev.description}</p>
-                  )}
-                  {ev.person_id && (
-                    <button
-                      type="button"
-                      className="text-sm font-semibold text-brass-deep mt-2"
-                      onClick={() => router.push(`/timeline/${ev.person_id}`)}
-                    >
-                      Open person timeline →
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ol>
+            <Chronicle moments={master} showPerson onSave={canEdit ? saveMoment : undefined} />
           )
         ) : null}
 
@@ -196,20 +210,12 @@ export default function TimelineHomePage() {
                           {person.person_name}
                         </h3>
                         <p className="text-sm text-ink-soft mt-0.5">
-                          {person.event_count} events
-                          {person.updated_at
-                            ? ` · ${new Date(person.updated_at).toLocaleDateString()}`
-                            : ""}
+                          {person.event_count} moment{person.event_count === 1 ? "" : "s"} in this life
                         </p>
                       </div>
                     </div>
-                    <div className="h-1 rounded-full bg-stone relative mb-4">
-                      <span className="absolute left-1/4 -top-1 w-2.5 h-2.5 rounded-full bg-brass" />
-                      <span className="absolute left-1/2 -top-1 w-2.5 h-2.5 rounded-full bg-brass" />
-                      <span className="absolute right-1/4 -top-1 w-2.5 h-2.5 rounded-full bg-brass" />
-                    </div>
                     <span className="text-sm font-semibold text-brass-deep">
-                      View timeline →
+                      Read this life
                     </span>
                   </button>
                 ))}

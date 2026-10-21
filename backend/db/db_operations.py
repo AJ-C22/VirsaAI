@@ -108,6 +108,124 @@ def insert_person(
     return str(cur.fetchone()[0])
 
 
+_GENERIC_PERSON_NAMES = {
+    "unknown",
+    "unknown storyteller",
+    "unknown relative",
+    "relative",
+    "n/a",
+    "na",
+}
+
+_SEX_FROM_LABEL = {
+    "father": "male",
+    "mother": "female",
+    "husband": "male",
+    "wife": "female",
+    "son": "male",
+    "daughter": "female",
+    "brother": "male",
+    "sister": "female",
+}
+
+
+def _normalize_person_name(name: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", (name or "").lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _remember_alias(cur, person_id: str, alias: str) -> None:
+    alias = (alias or "").strip()
+    if len(_normalize_person_name(alias)) < 3:
+        return
+    cur.execute(
+        """
+        INSERT INTO person_aliases (person_id, alias)
+        VALUES (%s, %s)
+        ON CONFLICT (person_id, alias) DO NOTHING
+        """,
+        (person_id, alias),
+    )
+
+
+def _find_person_by_name(cur, vault_id: str, name: str) -> Optional[str]:
+    """Match a vault person by display name or alias. Skip generic placeholders."""
+    norm = _normalize_person_name(name)
+    if not norm or len(norm) < 3 or norm in _GENERIC_PERSON_NAMES:
+        return None
+    cur.execute(
+        "SELECT id, display_name FROM persons WHERE vault_id = %s",
+        (vault_id,),
+    )
+    for pid, display in cur.fetchall():
+        if _normalize_person_name(display or "") == norm:
+            return str(pid)
+    cur.execute(
+        """
+        SELECT a.person_id, a.alias
+        FROM person_aliases a
+        JOIN persons p ON p.id = a.person_id
+        WHERE p.vault_id = %s
+        """,
+        (vault_id,),
+    )
+    for pid, alias in cur.fetchall():
+        if _normalize_person_name(alias or "") == norm:
+            return str(pid)
+    return None
+
+
+def _merge_person_details(
+    cur,
+    person_id: str,
+    name: str,
+    birth_year: Optional[int] = None,
+    death_year: Optional[int] = None,
+    birth_place: Optional[str] = None,
+    notes: Optional[str] = None,
+    sex: Optional[str] = None,
+) -> None:
+    """Fill empty fields on an existing person and remember a new name spelling."""
+    cur.execute("SELECT display_name FROM persons WHERE id = %s", (person_id,))
+    row = cur.fetchone()
+    current = (row[0] if row else "") or ""
+    incoming = (name or "").strip()
+    if incoming and _normalize_person_name(incoming) != _normalize_person_name(current):
+        _remember_alias(cur, person_id, incoming)
+    elif incoming and incoming != current:
+        _remember_alias(cur, person_id, incoming)
+    cur.execute(
+        """
+        UPDATE persons SET
+            birth_year = COALESCE(birth_year, %s),
+            death_year = COALESCE(death_year, %s),
+            birth_place = COALESCE(birth_place, %s),
+            sex = COALESCE(sex, %s),
+            notes = CASE
+                WHEN %s IS NULL OR btrim(%s) = '' THEN notes
+                WHEN notes IS NULL OR btrim(notes) = '' THEN %s
+                WHEN position(lower(btrim(%s)) in lower(notes)) > 0 THEN notes
+                ELSE notes || %s || %s
+            END,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (
+            birth_year,
+            death_year,
+            birth_place,
+            sex,
+            notes,
+            notes,
+            notes,
+            notes,
+            "\n",
+            notes,
+            person_id,
+        ),
+    )
+
+
 def get_or_create_person_by_name(
     cur,
     vault_id: str,
@@ -116,24 +234,26 @@ def get_or_create_person_by_name(
     death_year: Optional[int] = None,
     birth_place: Optional[str] = None,
     notes: Optional[str] = None,
+    sex: Optional[str] = None,
 ) -> str:
-    """Find an existing person in the vault by case-insensitive name, else create."""
+    """Find an existing person in the vault by name or alias, else create."""
     name = (display_name or "Unknown").strip()
-    cur.execute(
-        """
-        SELECT id FROM persons
-        WHERE vault_id = %s AND lower(display_name) = lower(%s)
-        LIMIT 1
-        """,
-        (vault_id, name),
-    )
-    row = cur.fetchone()
-    if row:
-        return str(row[0])
+    existing = _find_person_by_name(cur, vault_id, name)
+    if existing:
+        _merge_person_details(
+            cur, existing, name, birth_year, death_year, birth_place, notes, sex
+        )
+        return existing
 
-    return insert_person(
+    person_id = insert_person(
         cur, vault_id, name, birth_year, death_year, birth_place, notes
     )
+    if sex:
+        cur.execute(
+            "UPDATE persons SET sex = COALESCE(sex, %s) WHERE id = %s",
+            (sex, person_id),
+        )
+    return person_id
 
 
 def _insert_relationship(
@@ -214,8 +334,8 @@ def _structural_edges_for_kinship(
         if t == "parent":
             out.append((frm, to, "parent"))
         elif t == "child":
-            # Flip to canonical parent edge
-            out.append((to, frm, "parent"))
+            # Legacy rows store the parent first and the child second.
+            out.append((frm, to, "parent"))
         elif t in ("spouse", "sibling"):
             out.append((frm, to, t))
         # Ignore aunt_uncle / cousin / relative / etc.
@@ -563,7 +683,8 @@ def get_story_full(story_id: str) -> Optional[Dict]:
                     SELECT s.id, s.vault_id, s.subject_person_id, s.title, s.status,
                            s.transcript, s.biography, s.summary, s.extracted_data,
                            s.created_at, s.updated_at,
-                           p.display_name, p.birth_year, p.birth_place, p.death_year
+                           p.display_name, p.birth_year, p.birth_place, p.death_year,
+                           s.language
                     FROM stories s
                     LEFT JOIN persons p ON p.id = s.subject_person_id
                     WHERE s.id = %s
@@ -588,7 +709,12 @@ def get_story_full(story_id: str) -> Optional[Dict]:
                     "extracted_data": _loads(row[8]),
                     "created_at": row[9],
                     "updated_at": row[10],
+                    "language": row[15],
                 }
+                extracted = story_obj["extracted_data"] if isinstance(story_obj["extracted_data"], dict) else {}
+                translation = (extracted or {}).get("translation")
+                story_obj["original_transcript"] = row[5] or ""
+                story_obj["translation"] = translation if translation else None
                 if subject_id:
                     story_obj["person"] = {
                         "id": str(subject_id),
@@ -1003,6 +1129,73 @@ def get_all_people(vault_id: str = DEFAULT_VAULT_ID) -> List[Dict]:
         return []
 
 
+def _sort_timeline(events: List[Dict]) -> List[Dict]:
+    def key(event: Dict):
+        year = event.get("year")
+        missing = year is None
+        try:
+            year_n = int(year) if year is not None else 0
+        except (TypeError, ValueError):
+            year_n = 0
+            missing = True
+        return (missing, year_n, str(event.get("created_at") or ""))
+
+    return sorted(events, key=key)
+
+
+def _artifact_timeline_rows(cur, person_id: Optional[str] = None, vault_id: Optional[str] = None) -> List[Dict]:
+    """Dated photos and documents, shaped like timeline events."""
+    if person_id:
+        cur.execute(
+            """
+            SELECT a.id, a.title, a.caption, a.taken_year, a.taken_place,
+                   a.artifact_type, a.person_id, p.display_name, a.created_at
+            FROM artifacts a
+            LEFT JOIN persons p ON p.id = a.person_id
+            WHERE a.person_id = %s AND a.taken_year IS NOT NULL
+            """,
+            (person_id,),
+        )
+    elif vault_id:
+        cur.execute(
+            """
+            SELECT a.id, a.title, a.caption, a.taken_year, a.taken_place,
+                   a.artifact_type, a.person_id, p.display_name, a.created_at
+            FROM artifacts a
+            LEFT JOIN persons p ON p.id = a.person_id
+            WHERE a.vault_id = %s AND a.taken_year IS NOT NULL
+            """,
+            (vault_id,),
+        )
+    else:
+        return []
+    rows = []
+    for r in cur.fetchall():
+        kind = r[5] or "artifact"
+        rows.append(
+            {
+                "id": f"artifact:{r[0]}",
+                "artifact_id": str(r[0]),
+                "year": r[3],
+                "event": r[1],
+                "title": r[1],
+                "description": r[2],
+                "location": r[4],
+                "place": r[4],
+                "category": "artifact",
+                "kind": "artifact",
+                "artifact_type": kind,
+                "created_at": r[8],
+                "source_story_id": None,
+                "status": "confirmed",
+                "confidence": None,
+                "person_id": _as_str(r[6]),
+                "person_name": r[7],
+            }
+        )
+    return rows
+
+
 def _fetch_timeline_for_person(
     cur, person_id: str, confirmed_only: bool = True
 ) -> List[Dict]:
@@ -1017,7 +1210,7 @@ def _fetch_timeline_for_person(
         """,
         (person_id,),
     )
-    return [
+    events = [
         {
             "id": str(row[0]),
             "year": row[1],
@@ -1031,9 +1224,12 @@ def _fetch_timeline_for_person(
             "source_story_id": _as_str(row[7]),
             "status": row[8],
             "confidence": row[9],
+            "kind": "event",
         }
         for row in cur.fetchall()
     ]
+    events.extend(_artifact_timeline_rows(cur, person_id=person_id))
+    return _sort_timeline(events)
 
 
 def _fetch_occupations(cur, person_id: str) -> List[Dict]:
@@ -1078,6 +1274,108 @@ def _fetch_places(cur, person_id: str) -> List[Dict]:
         }
         for r in cur.fetchall()
     ]
+
+
+def _moment_year(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        year = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Year must be a number, or blank")
+    if year < 1 or year > 2100:
+        raise ValueError("Year must be between 1 and 2100")
+    return year
+
+
+def update_timeline_event(
+    event_id: str,
+    title: str,
+    description: Optional[str],
+    place: Optional[str],
+    year: Optional[int],
+) -> Optional[Dict]:
+    """Rewrite the words of one confirmed life moment."""
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("A moment needs a title")
+    description = (description or "").strip() or None
+    place = (place or "").strip() or None
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE timeline_events
+                    SET title = %s, description = %s, place = %s, year = %s
+                    WHERE id = %s
+                    RETURNING id, year, title, description, place, category
+                    """,
+                    (title, description, place, year, event_id),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]),
+            "year": row[1],
+            "event": row[2],
+            "title": row[2],
+            "description": row[3],
+            "location": row[4],
+            "place": row[4],
+            "category": row[5],
+            "kind": "event",
+        }
+    except Exception as e:
+        print("Error update_timeline_event:", e)
+        return None
+
+
+def update_artifact_moment(
+    artifact_id: str,
+    title: str,
+    description: Optional[str],
+    place: Optional[str],
+    year: Optional[int],
+) -> Optional[Dict]:
+    """Rewrite the caption of a dated artifact shown on the timeline."""
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("A moment needs a title")
+    description = (description or "").strip() or None
+    place = (place or "").strip() or None
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE artifacts
+                    SET title = %s, caption = %s, taken_place = %s, taken_year = %s
+                    WHERE id = %s
+                    RETURNING id, taken_year, title, caption, taken_place, artifact_type
+                    """,
+                    (title, description, place, year, artifact_id),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": f"artifact:{row[0]}",
+            "artifact_id": str(row[0]),
+            "year": row[1],
+            "event": row[2],
+            "title": row[2],
+            "description": row[3],
+            "location": row[4],
+            "place": row[4],
+            "artifact_type": row[5],
+            "kind": "artifact",
+            "category": "artifact",
+        }
+    except Exception as e:
+        print("Error update_artifact_moment:", e)
+        return None
 
 
 def get_timeline_events(story_or_person_id: str) -> Dict:
@@ -1160,7 +1458,7 @@ def get_master_timeline(
                         """,
                         (vault_id,),
                     )
-                return [
+                events = [
                     {
                         "id": str(r[0]),
                         "year": r[1],
@@ -1173,9 +1471,16 @@ def get_master_timeline(
                         "person_name": r[7],
                         "source_story_id": _as_str(r[8]),
                         "created_at": r[9],
+                        "kind": "event",
                     }
                     for r in cur.fetchall()
                 ]
+                if not person_ids:
+                    events.extend(_artifact_timeline_rows(cur, vault_id=vault_id))
+                else:
+                    for pid in person_ids:
+                        events.extend(_artifact_timeline_rows(cur, person_id=pid))
+                return _sort_timeline(events)
     except Exception as e:
         print(f"Error retrieving master timeline: {e}")
         return []
@@ -1191,6 +1496,8 @@ def get_family_graph(
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                attach_named_family_links(cur, vault_id)
+                inherit_blood_family(cur, vault_id)
                 cur.execute(
                     """
                     SELECT kinship_system, cultural_context, name
@@ -1373,6 +1680,7 @@ def create_family_member_global(
     notes: Optional[str] = None,
     vault_id: str = DEFAULT_VAULT_ID,
     related_to_person_id: Optional[str] = None,
+    sex: Optional[str] = None,
     *,
     force_new: bool = True,
 ) -> Optional[str]:
@@ -1387,13 +1695,25 @@ def create_family_member_global(
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 ensure_default_vault(cur)
+                implied_sex = sex or _SEX_FROM_LABEL.get((relationship or "").strip().lower())
                 if force_new:
                     person_id = insert_person(
                         cur, vault_id, name, birth_year, death_year, notes=notes
                     )
+                    if implied_sex:
+                        cur.execute(
+                            "UPDATE persons SET sex = %s WHERE id = %s",
+                            (implied_sex, person_id),
+                        )
                 else:
                     person_id = get_or_create_person_by_name(
-                        cur, vault_id, name, birth_year, death_year, notes=notes
+                        cur,
+                        vault_id,
+                        name,
+                        birth_year,
+                        death_year,
+                        notes=notes,
+                        sex=implied_sex,
                     )
                 subject_id = related_to_person_id
                 if not subject_id and story_id:
@@ -1425,9 +1745,11 @@ def update_person(
     death_year: Optional[int] = None,
     notes: Optional[str] = None,
     birth_place: Optional[str] = None,
+    sex: Optional[str] = None,
     *,
     set_birth_year: bool = False,
     set_death_year: bool = False,
+    set_sex: bool = False,
 ) -> bool:
     try:
         updates = []
@@ -1453,6 +1775,12 @@ def update_person(
         if birth_place is not None:
             updates.append("birth_place = %s")
             vals.append(birth_place)
+        if set_sex:
+            updates.append("sex = %s")
+            vals.append(sex)
+        elif sex is not None:
+            updates.append("sex = %s")
+            vals.append(sex)
         if not updates:
             return False
         updates.append("updated_at = NOW()")
@@ -1477,9 +1805,11 @@ def update_family_member(
     birth_year: Optional[int] = None,
     death_year: Optional[int] = None,
     notes: Optional[str] = None,
+    sex: Optional[str] = None,
     *,
     set_birth_year: bool = False,
     set_death_year: bool = False,
+    set_sex: bool = False,
 ) -> bool:
     # relationship string updates are ignored here; use create_relationship
     return update_person(
@@ -1488,8 +1818,10 @@ def update_family_member(
         birth_year,
         death_year,
         notes,
+        sex=sex,
         set_birth_year=set_birth_year,
         set_death_year=set_death_year,
+        set_sex=set_sex,
     )
 
 
@@ -1506,6 +1838,68 @@ def delete_person(person_id: str) -> bool:
 
 def delete_family_member(member_id: str) -> bool:
     return delete_person(member_id)
+
+
+def attach_named_family_links(cur, vault_id: str) -> int:
+    """Save marriages and named in-laws the story already states."""
+    from family_extract import named_family_links
+
+    cur.execute(
+        """
+        SELECT id::text, display_name
+        FROM persons WHERE vault_id = %s
+        """,
+        (vault_id,),
+    )
+    people = [(str(row[0]), row[1] or "") for row in cur.fetchall()]
+    cur.execute(
+        """
+        SELECT transcript FROM stories
+        WHERE vault_id = %s AND coalesce(transcript, '') <> ''
+        """,
+        (vault_id,),
+    )
+    created = 0
+    seen = set()
+    for (transcript,) in cur.fetchall():
+        for frm, to, rel_type in named_family_links(transcript, people):
+            key = (frm, to, rel_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            if _insert_relationship(
+                cur, vault_id, frm, to, rel_type, None, certainty=0.9
+            ):
+                created += 1
+    return created
+
+
+def inherit_blood_family(cur, vault_id: str) -> int:
+    """Persist parent links a new sibling or child can already be named by."""
+    from family_inherit import inherited_parent_edges
+
+    cur.execute(
+        """
+        SELECT from_person_id, to_person_id, type
+        FROM relationships WHERE vault_id = %s
+        """,
+        (vault_id,),
+    )
+    edges = [(str(row[0]), str(row[1]), row[2]) for row in cur.fetchall()]
+    created = 0
+    for parent_id, child_id, rel_type in inherited_parent_edges(edges):
+        rel_id = _insert_relationship(
+            cur,
+            vault_id,
+            parent_id,
+            child_id,
+            rel_type,
+            None,
+            certainty=0.9,
+        )
+        if rel_id:
+            created += 1
+    return created
 
 
 def create_relationship(
@@ -1563,6 +1957,7 @@ def create_relationship(
                         "UPDATE relationships SET notes = %s WHERE id = %s",
                         (notes, rel_id),
                     )
+                inherit_blood_family(cur, vault_id)
                 return rel_id
     except Exception as e:
         print("Error create_relationship:", e)
@@ -1645,6 +2040,13 @@ def update_relationship(
                         "UPDATE relationships SET notes = %s WHERE id = %s",
                         (notes, relationship_id),
                     )
+                cur.execute(
+                    "SELECT vault_id FROM relationships WHERE id = %s",
+                    (relationship_id,),
+                )
+                vault_row = cur.fetchone()
+                if vault_row and vault_row[0]:
+                    inherit_blood_family(cur, str(vault_row[0]))
                 return True
     except Exception as e:
         print("Error update_relationship:", e)
@@ -1718,6 +2120,29 @@ def reject_suggestion(suggestion_id: str) -> bool:
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    SELECT kind, payload, resolved_entity_id, status
+                    FROM ai_suggestions WHERE id = %s
+                    """,
+                    (suggestion_id,),
+                )
+                row = cur.fetchone()
+                if not row or row[3] == "rejected":
+                    return False
+                kind = row[0]
+                payload = _loads(row[1]) if row[1] else {}
+                rel_id = _as_str(row[2]) or _as_str((payload or {}).get("relationship_id"))
+                # Drop an automatic edge the family does not want.
+                # Hand-drawn links use certainty 1 and are left alone.
+                if kind in ("relationship", "family_member") and rel_id:
+                    cur.execute(
+                        """
+                        DELETE FROM relationships
+                        WHERE id = %s AND certainty < 1
+                        """,
+                        (rel_id,),
+                    )
+                cur.execute(
+                    """
                     UPDATE ai_suggestions
                     SET status = 'rejected', resolved_at = NOW()
                     WHERE id = %s
@@ -1732,12 +2157,14 @@ def reject_suggestion(suggestion_id: str) -> bool:
 
 def confirm_suggestion(suggestion_id: str) -> bool:
     """Accept a pending suggestion and promote linked suggested facts to confirmed."""
+    vault_for_link: Optional[str] = None
+    link_memories = False
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, kind, payload, resolved_entity_id, status, story_id
+                    SELECT id, kind, payload, resolved_entity_id, status, story_id, vault_id
                     FROM ai_suggestions WHERE id = %s
                     """,
                     (suggestion_id,),
@@ -1749,6 +2176,7 @@ def confirm_suggestion(suggestion_id: str) -> bool:
                 payload = _loads(row[2]) if row[2] else {}
                 entity_id = _as_str(row[3])
                 story_id = _as_str(row[5])
+                vault_id = _as_str(row[6])
 
                 if kind == "timeline_event":
                     title = payload.get("event") or payload.get("title")
@@ -1775,8 +2203,32 @@ def confirm_suggestion(suggestion_id: str) -> bool:
                         found = cur.fetchone()
                         if found:
                             entity_id = str(found[0])
+                    link_memories = True
+                    vault_for_link = vault_id
                 elif kind in ("relationship", "family_member"):
                     entity_id = entity_id or _as_str(payload.get("relationship_id"))
+                    if not entity_id and story_id and vault_id:
+                        other_id = _as_str(payload.get("person_id"))
+                        label = payload.get("relationship") or "relative"
+                        cur.execute(
+                            "SELECT subject_person_id FROM stories WHERE id = %s",
+                            (story_id,),
+                        )
+                        subject_row = cur.fetchone()
+                        subject_id = _as_str(subject_row[0]) if subject_row else None
+                        if subject_id and other_id:
+                            edge = _tree_edge_for_label(subject_id, other_id, label)
+                            if edge:
+                                frm, to, rel_type = edge
+                                entity_id = _insert_relationship(
+                                    cur,
+                                    vault_id,
+                                    frm,
+                                    to,
+                                    rel_type,
+                                    story_id,
+                                    certainty=1.0,
+                                )
                 elif kind == "place" and entity_id:
                     cur.execute(
                         "UPDATE places SET status = 'confirmed' WHERE id = %s",
@@ -1798,7 +2250,13 @@ def confirm_suggestion(suggestion_id: str) -> bool:
                     """,
                     (entity_id, suggestion_id),
                 )
-                return cur.rowcount > 0
+                accepted = cur.rowcount > 0
+        if accepted and link_memories and vault_for_link:
+            try:
+                link_shared_memories_for_vault(vault_for_link)
+            except Exception as le:
+                print("Shared memory linking skipped:", le)
+        return accepted
     except Exception as e:
         print("Error confirm_suggestion:", e)
         return False
@@ -1813,6 +2271,7 @@ def get_entity_vault_id(kind: str, entity_id: str) -> Optional[str]:
         "suggestion": ("ai_suggestions", "id"),
         "artifact": ("artifacts", "id"),
         "shared_memory": ("shared_memories", "id"),
+        "timeline_event": ("timeline_events", "id"),
     }.get(kind)
     if not table_col or not entity_id:
         return None
@@ -2048,6 +2507,69 @@ def get_processing_status(story_id: str) -> Optional[Dict]:
         return None
 
 
+def _link_extended_family(
+    cur,
+    vault_id: str,
+    story_id: str,
+    subject_id: str,
+    prepared: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    """
+    Attach a parent's sibling or parent when the story names them clearly
+    and that parent is already on the tree. One matching parent only —
+    ambiguity stays unattached for the family to place by hand.
+    """
+    cur.execute(
+        """
+        SELECT r.from_person_id, lower(COALESCE(p.sex, ''))
+        FROM relationships r
+        JOIN persons p ON p.id = r.from_person_id
+        WHERE r.to_person_id = %s AND r.type = 'parent'
+        """,
+        (subject_id,),
+    )
+    fathers: List[str] = []
+    mothers: List[str] = []
+    for pid, sex in cur.fetchall():
+        if sex in ("f", "female", "woman", "girl"):
+            mothers.append(str(pid))
+        elif sex in ("m", "male", "man", "boy"):
+            fathers.append(str(pid))
+
+    linked: Dict[str, str] = {}
+    for item in prepared:
+        member = item.get("member") or {}
+        other_id = item.get("other_id")
+        hint = member.get("link_hint")
+        if not other_id or not hint:
+            continue
+        if (member.get("relationship") or "") != "relative":
+            continue
+        if item.get("tree_edge"):
+            continue
+        anchor_list: List[str] = []
+        mode = ""
+        if hint in ("sibling_of_father", "parent_of_father"):
+            anchor_list, mode = fathers, hint
+        elif hint in ("sibling_of_mother", "parent_of_mother"):
+            anchor_list, mode = mothers, hint
+        if len(anchor_list) != 1:
+            continue
+        anchor = anchor_list[0]
+        if mode.startswith("sibling"):
+            a, b = sorted([other_id, anchor])
+            rel_id = _insert_relationship(
+                cur, vault_id, a, b, "sibling", story_id, certainty=0.86
+            )
+        else:
+            rel_id = _insert_relationship(
+                cur, vault_id, other_id, anchor, "parent", story_id, certainty=0.86
+            )
+        if rel_id:
+            linked[other_id] = rel_id
+    return linked
+
+
 def _apply_extracted_to_graph(
     cur,
     vault_id: str,
@@ -2056,11 +2578,22 @@ def _apply_extracted_to_graph(
     extracted_data: Dict,
     auto_confirm: bool,
 ) -> None:
-    fact_status = "confirmed" if auto_confirm else "suggested"
-    suggestion_status = "accepted" if auto_confirm else "pending"
+    def _known_year(value: Any) -> bool:
+        if value is None or value == "":
+            return False
+        try:
+            year = int(float(value))
+        except (TypeError, ValueError):
+            return False
+        return 1 <= year <= 2100
 
     for event in (extracted_data or {}).get("timeline_events") or []:
         title = event.get("event") or event.get("title") or "Event"
+        # A dated event is solid enough to show on the person and family timelines.
+        # Undated events stay in review until someone confirms them.
+        event_confirmed = bool(auto_confirm or _known_year(event.get("year")))
+        fact_status = "confirmed" if event_confirmed else "suggested"
+        suggestion_status = "accepted" if event_confirmed else "pending"
         cur.execute(
             """
             INSERT INTO timeline_events (
@@ -2093,10 +2626,11 @@ def _apply_extracted_to_graph(
                 story_id,
                 _json(event),
                 suggestion_status,
-                event_id if auto_confirm else None,
+                event_id if event_confirmed else None,
             ),
         )
 
+    prepared_members: List[Dict[str, Any]] = []
     for member in (extracted_data or {}).get("family_members") or []:
         m_name = (member.get("name") or "").strip() or "Unknown relative"
         raw_rel = member.get("relationship") or "relative"
@@ -2111,6 +2645,7 @@ def _apply_extracted_to_graph(
         if raw_rel == "relative" and member.get("relationship"):
             note_bits.append(f"Mentioned as: {member.get('relationship')}")
         notes = " · ".join(b for b in note_bits if b).strip(" ·")
+        implied_sex = member.get("implied_sex") or _SEX_FROM_LABEL.get(raw_rel)
         other_id = get_or_create_person_by_name(
             cur,
             vault_id,
@@ -2118,16 +2653,45 @@ def _apply_extracted_to_graph(
             birth_year=member.get("birth_year"),
             death_year=member.get("death_year"),
             notes=notes or None,
+            sex=implied_sex,
         )
         tree_edge = None
         if raw_rel != "relative":
             tree_edge = _tree_edge_for_label(subject_id, other_id, raw_rel)
-        rel_id = None
-        if tree_edge:
-            frm, to, rel_type = tree_edge
-            rel_id = _insert_relationship(
-                cur, vault_id, frm, to, rel_type, story_id, certainty=0.9
-            )
+        prepared_members.append(
+            {
+                "member": member,
+                "other_id": other_id,
+                "tree_edge": tree_edge,
+                "raw_rel": raw_rel,
+            }
+        )
+
+    # Direct father/mother/spouse/child/sibling links first, so a chacha or
+    # dada named in the same story can attach to that parent immediately.
+    direct_links: Dict[str, str] = {}
+    for item in prepared_members:
+        tree_edge = item.get("tree_edge")
+        if not tree_edge:
+            continue
+        frm, to, rel_type = tree_edge
+        rel_id = _insert_relationship(
+            cur, vault_id, frm, to, rel_type, story_id, certainty=0.9
+        )
+        if rel_id:
+            direct_links[item["other_id"]] = rel_id
+
+    extended_links = _link_extended_family(
+        cur, vault_id, story_id, subject_id, prepared_members
+    )
+    attach_named_family_links(cur, vault_id)
+
+    for item in prepared_members:
+        member = item["member"]
+        other_id = item["other_id"]
+        rel_id = direct_links.get(other_id) or extended_links.get(other_id)
+        linked = bool(rel_id)
+        member_suggestion_status = "accepted" if (auto_confirm or linked) else "pending"
         cur.execute(
             """
             INSERT INTO ai_suggestions (
@@ -2138,12 +2702,19 @@ def _apply_extracted_to_graph(
                 vault_id,
                 story_id,
                 _json({**member, "person_id": other_id, "relationship_id": rel_id}),
-                suggestion_status,
-                rel_id if auto_confirm else None,
+                member_suggestion_status,
+                rel_id,
             ),
         )
 
     for location in (extracted_data or {}).get("locations") or []:
+        place_confirmed = bool(
+            auto_confirm
+            or _known_year(location.get("start_year"))
+            or _known_year(location.get("end_year"))
+        )
+        fact_status = "confirmed" if place_confirmed else "suggested"
+        suggestion_status = "accepted" if place_confirmed else "pending"
         cur.execute(
             """
             INSERT INTO places (
@@ -2175,11 +2746,18 @@ def _apply_extracted_to_graph(
                 story_id,
                 _json(location),
                 suggestion_status,
-                place_id if auto_confirm else None,
+                place_id if place_confirmed else None,
             ),
         )
 
     for occupation in (extracted_data or {}).get("occupations") or []:
+        occ_confirmed = bool(
+            auto_confirm
+            or _known_year(occupation.get("start_year"))
+            or _known_year(occupation.get("end_year"))
+        )
+        fact_status = "confirmed" if occ_confirmed else "suggested"
+        suggestion_status = "accepted" if occ_confirmed else "pending"
         cur.execute(
             """
             INSERT INTO occupations (
@@ -2211,7 +2789,7 @@ def _apply_extracted_to_graph(
                 story_id,
                 _json(occupation),
                 suggestion_status,
-                occ_id if auto_confirm else None,
+                occ_id if occ_confirmed else None,
             ),
         )
 
@@ -2240,6 +2818,7 @@ def finalize_story_processing(
     extracted_data: Dict,
     person_name_hint: Optional[str] = None,
     auto_confirm: bool = True,
+    language: Optional[str] = None,
 ) -> bool:
     """
     Persist pipeline outputs onto an existing story shell and write
@@ -2315,19 +2894,26 @@ def finalize_story_processing(
                         ),
                     )
 
-                # Final safety: sanitize any family_members before writing edges
+                # Final safety: sanitize any family_members before writing edges.
+                # Search both the spoken transcript and the English rendering so
+                # kinship words in either language can support a link.
                 try:
                     from family_extract import sanitize_family_members
 
                     extracted_data = dict(extracted_data or {})
+                    translation = extracted_data.get("translation") or ""
+                    evidence_text = transcript or ""
+                    if translation and translation.strip() != evidence_text.strip():
+                        evidence_text = f"{evidence_text}\n{translation}"
                     extracted_data["family_members"] = sanitize_family_members(
                         extracted_data.get("family_members") or [],
-                        transcript,
+                        evidence_text,
                         display if display != "Unknown" else person_name_hint,
                     )
                 except Exception as se:
                     print("family sanitize skipped:", se)
 
+                spoken_language = language or (extracted_data or {}).get("language")
                 cur.execute(
                     """
                     UPDATE stories
@@ -2337,6 +2923,7 @@ def finalize_story_processing(
                         extracted_data = %s::jsonb,
                         subject_person_id = %s,
                         title = %s,
+                        language = COALESCE(%s, language),
                         status = 'ready'::story_status,
                         error_message = NULL,
                         updated_at = NOW()
@@ -2349,6 +2936,7 @@ def finalize_story_processing(
                         _json(extracted_data),
                         subject_id,
                         display,
+                        spoken_language,
                         story_id,
                     ),
                 )

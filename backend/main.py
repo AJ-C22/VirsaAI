@@ -17,8 +17,9 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from auth import (
     ADMIN_ROLES,
@@ -38,6 +39,7 @@ from auth import (
     set_vault_plan,
     vault_dashboard_stats,
 )
+from alerts import format_exception, record_error
 from billing import (
     create_checkout_session,
     create_portal_session,
@@ -66,7 +68,10 @@ from db.db_operations import (
     get_processing_status,
     get_story,
     get_story_full,
+    _moment_year,
     get_timeline_events,
+    update_artifact_moment,
+    update_timeline_event,
     get_vault,
     link_shared_memories_for_vault,
     list_artifacts,
@@ -80,7 +85,9 @@ from db.db_operations import (
     update_relationship,
     update_vault_culture,
 )
+from mailer import send_invite_email
 from pipeline import process_transcript_story, process_uploaded_story
+from rate_limit import allow
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -112,6 +119,25 @@ else:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+def _too_many(request: Request, bucket: str, limit: int) -> None:
+    host = request.client.host if request.client else "local"
+    if not allow(f"{bucket}:{host}", limit):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Try again in a minute.",
+        )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if isinstance(exc, RequestValidationError):
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    record_error(request.url.path, str(exc), format_exception(exc))
+    return JSONResponse(status_code=500, content={"detail": "Something went wrong"})
 
 
 @app.get("/health")
@@ -180,7 +206,8 @@ def _require_entity_vault(
 
 
 @app.post("/auth/register")
-def auth_register(payload: dict):
+def auth_register(payload: dict, request: Request):
+    _too_many(request, "auth", int(os.getenv("RATE_LIMIT_AUTH") or "10"))
     try:
         return register_user(
             email=payload.get("email", ""),
@@ -192,7 +219,8 @@ def auth_register(payload: dict):
 
 
 @app.post("/auth/login")
-def auth_login(payload: dict):
+def auth_login(payload: dict, request: Request):
+    _too_many(request, "auth", int(os.getenv("RATE_LIMIT_AUTH") or "10"))
     try:
         return login_user(payload.get("email", ""), payload.get("password", ""))
     except ValueError as e:
@@ -344,15 +372,25 @@ def billing_set_plan(payload: dict, user: dict = Depends(_require_user)):
 
 
 @app.post("/vaults/invite")
-def vault_invite(payload: dict, user: dict = Depends(_require_user)):
+def vault_invite(payload: dict, request: Request, user: dict = Depends(_require_user)):
+    _too_many(request, "invite", int(os.getenv("RATE_LIMIT_INVITE") or "20"))
     vault_id = _require_vault(user, payload.get("vault_id"), write=True)
     try:
-        return create_invite(
+        invite = create_invite(
             vault_id=vault_id,
             email=payload.get("email", ""),
             role=payload.get("role") or "editor",
             invited_by=user["sub"],
         )
+        base = (os.getenv("APP_URL") or "http://127.0.0.1:3000").rstrip("/")
+        vault = get_vault(vault_id) or {}
+        invite["email_delivery"] = send_invite_email(
+            invite["email"],
+            f"{base}{invite['invite_url']}",
+            vault.get("name") or "your family",
+            payload.get("role") or "editor",
+        )
+        return invite
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -502,6 +540,7 @@ def artifact_file(artifact_id: str, user: dict = Depends(_require_user)):
 
 @app.post("/artifacts/upload")
 async def artifacts_upload(
+    request: Request,
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     caption: Optional[str] = Form(None),
@@ -513,6 +552,7 @@ async def artifacts_upload(
     vault_id: Optional[str] = Form(None),
     user: dict = Depends(_require_user),
 ):
+    _too_many(request, "upload", int(os.getenv("RATE_LIMIT_UPLOAD") or "10"))
     vid = _require_vault(user, vault_id, write=True)
     artifact_dir = UPLOAD_DIR / "artifacts"
     artifact_dir.mkdir(exist_ok=True)
@@ -559,6 +599,28 @@ def master_timeline(
 ):
     vid = _require_vault(user, vault_id)
     return get_master_timeline(vid, person_id)
+
+
+@app.patch("/timeline/moments/{moment_id}")
+def patch_timeline_moment(moment_id: str, payload: dict, user: dict = Depends(_require_user)):
+    """Edit the title, description, place, or year of one timeline moment."""
+    title = payload.get("title") if "title" in payload else payload.get("event")
+    description = payload.get("description")
+    place = payload.get("place") if "place" in payload else payload.get("location")
+    try:
+        year = _moment_year(payload.get("year")) if "year" in payload else None
+        if moment_id.startswith("artifact:"):
+            artifact_id = moment_id.split(":", 1)[1]
+            _require_entity_vault(user, "artifact", artifact_id, write=True)
+            updated = update_artifact_moment(artifact_id, title or "", description, place, year)
+        else:
+            _require_entity_vault(user, "timeline_event", moment_id, write=True)
+            updated = update_timeline_event(moment_id, title or "", description, place, year)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Moment not found")
+    return updated
 
 
 @app.get("/timeline/{entity_id}")
@@ -657,6 +719,7 @@ def _start_transcript_job(
 
 @app.post("/stories/upload")
 async def upload_story(
+    request: Request,
     file: UploadFile = File(...),
     person_name: Optional[str] = Form(None),
     title: Optional[str] = Form(None),
@@ -665,6 +728,7 @@ async def upload_story(
     user: dict = Depends(_require_user),
 ):
     """Upload oral history audio → async Whisper + Gemini pipeline."""
+    _too_many(request, "upload", int(os.getenv("RATE_LIMIT_UPLOAD") or "10"))
     if not os.getenv("GEMINI_KEY"):
         raise HTTPException(status_code=500, detail="GEMINI_KEY is not configured")
 
@@ -786,6 +850,7 @@ def create_member(payload: dict, user: dict = Depends(_require_user)):
         notes=payload.get("notes"),
         vault_id=vault_id,
         related_to_person_id=payload.get("related_to_person_id"),
+        sex=payload.get("sex"),
     )
     if not member_id:
         raise HTTPException(status_code=500, detail="Failed to create member")
@@ -818,8 +883,10 @@ def update_member(member_id: str, payload: dict, user: dict = Depends(_require_u
         birth_year=payload.get("birth_year"),
         death_year=payload.get("death_year"),
         notes=payload.get("notes"),
+        sex=payload.get("sex"),
         set_birth_year="birth_year" in payload,
         set_death_year="death_year" in payload,
+        set_sex="sex" in payload,
     )
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to update")

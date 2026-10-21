@@ -11,10 +11,13 @@ type Artifact = {
   title: string;
   caption?: string;
   artifact_type: string;
-  taken_year?: number;
-  taken_place?: string;
+  taken_year?: number | null;
+  taken_place?: string | null;
   mime_type?: string;
+  person_id?: string | null;
 };
+
+type PersonOption = { id: string; name: string };
 
 export default function ArtifactsPage() {
   const { apiRoot, vaultId, authHeaders, apiFetch } = useAuth();
@@ -24,6 +27,10 @@ export default function ArtifactsPage() {
   const [title, setTitle] = useState("");
   const [caption, setCaption] = useState("");
   const [type, setType] = useState("photo");
+  const [takenYear, setTakenYear] = useState("");
+  const [takenPlace, setTakenPlace] = useState("");
+  const [personId, setPersonId] = useState("");
+  const [people, setPeople] = useState<PersonOption[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,6 +41,13 @@ export default function ArtifactsPage() {
 
   useEffect(() => {
     void load();
+    apiFetch("/family")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const list = (data?.persons || data?.members || []) as PersonOption[];
+        setPeople(list.map((person) => ({ id: person.id, name: person.name })));
+      })
+      .catch(() => setPeople([]));
   }, [apiFetch, vaultId]);
 
   const openArtifact = async (id: string, mime?: string) => {
@@ -62,6 +76,15 @@ export default function ArtifactsPage() {
       form.append("title", title || file.name);
       form.append("caption", caption);
       form.append("artifact_type", type);
+      if (takenYear.trim()) {
+        const year = Number(takenYear.trim());
+        if (!Number.isInteger(year)) {
+          throw new Error("Year should be a number, like 1962");
+        }
+        form.append("taken_year", String(year));
+      }
+      if (takenPlace.trim()) form.append("taken_place", takenPlace.trim());
+      if (personId) form.append("person_id", personId);
       if (vaultId) form.append("vault_id", vaultId);
       const res = await fetch(`${apiRoot}/artifacts/upload`, {
         method: "POST",
@@ -72,6 +95,8 @@ export default function ArtifactsPage() {
       if (!res.ok) throw new Error(data.detail || "Upload failed");
       setTitle("");
       setCaption("");
+      setTakenYear("");
+      setTakenPlace("");
       await load();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Upload failed");
@@ -86,8 +111,8 @@ export default function ArtifactsPage() {
       <p className="label-eyebrow mb-3">Family artifacts</p>
       <h1 className="font-display text-4xl text-ink mb-3">Photos & documents</h1>
       <p className="text-ink-soft mb-8 max-w-2xl leading-relaxed">
-        Add letters, certificates, and photographs. They become searchable
-        alongside oral histories and timeline events.
+        Add letters, certificates, and photographs. A year and a person place
+        the picture on that life timeline and on the family timeline.
       </p>
 
       <div className="rounded-2xl border border-line bg-white p-6 mb-8">
@@ -108,6 +133,33 @@ export default function ArtifactsPage() {
             <option value="letter">Letter</option>
             <option value="certificate">Certificate</option>
             <option value="other">Other</option>
+          </select>
+        </div>
+        <div className="grid md:grid-cols-3 gap-4 mb-4">
+          <input
+            value={takenYear}
+            onChange={(e) => setTakenYear(e.target.value)}
+            placeholder="Year taken"
+            inputMode="numeric"
+            className="field"
+          />
+          <input
+            value={takenPlace}
+            onChange={(e) => setTakenPlace(e.target.value)}
+            placeholder="Place"
+            className="field"
+          />
+          <select
+            value={personId}
+            onChange={(e) => setPersonId(e.target.value)}
+            className="field"
+          >
+            <option value="">Whose life?</option>
+            {people.map((person) => (
+              <option key={person.id} value={person.id}>
+                {person.name}
+              </option>
+            ))}
           </select>
         </div>
         <textarea
@@ -169,6 +221,17 @@ export default function ArtifactsPage() {
             )}
             <h3 className="font-semibold text-ink">{a.title}</h3>
             {a.caption && <p className="text-sm text-ink-soft mt-1">{a.caption}</p>}
+            {(a.taken_year || a.taken_place || a.person_id) && (
+              <p className="text-xs text-ink-soft mt-2">
+                {[
+                  a.taken_year,
+                  a.taken_place,
+                  people.find((person) => person.id === a.person_id)?.name,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            )}
             <button
               type="button"
               className="btn-ghost mt-3 text-sm"

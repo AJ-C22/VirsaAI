@@ -127,11 +127,21 @@ export default function VaultSettingsPage() {
         typeof window !== "undefined"
           ? `${window.location.origin}${data.invite_url}`
           : data.invite_url;
-      try {
-        await navigator.clipboard.writeText(url);
-        setInviteMsg(`Invite link copied for ${data.email}`);
-      } catch {
-        setInviteMsg(`Invite created: ${url}`);
+      const mailed = data.email_delivery?.delivered;
+      const copied = await navigator.clipboard.writeText(url).then(
+        () => true,
+        () => false
+      );
+      if (mailed && copied) {
+        setInviteMsg(`Emailed ${data.email}. The link is also on your clipboard.`);
+      } else if (mailed) {
+        setInviteMsg(`Emailed ${data.email}. Link: ${url}`);
+      } else if (copied) {
+        setInviteMsg(
+          `Invite saved for ${data.email}. Mail is not configured yet, so the link was copied.`
+        );
+      } else {
+        setInviteMsg(`Invite saved for ${data.email}. Link: ${url}`);
       }
       setInviteEmail("");
       await loadInvites();
@@ -232,8 +242,9 @@ export default function VaultSettingsPage() {
           <div className="mt-14 pt-10 border-t border-line">
             <h2 className="font-display text-2xl text-ink mb-2">Invite family</h2>
             <p className="text-sm text-ink-soft mb-5 leading-relaxed">
-              Send a link (email delivery comes with Stripe ship). They must use
-              the invited email to accept.
+              An invitation is saved for their email. When mail is configured it
+              is sent; until then the link is copied here. They must accept with
+              that same email.
             </p>
             <div className="flex flex-col sm:flex-row gap-3 mb-4">
               <input
@@ -249,7 +260,7 @@ export default function VaultSettingsPage() {
                 onClick={() => void sendInvite()}
                 className="btn-accent shrink-0"
               >
-                {inviteBusy ? "Creating…" : "Create invite link"}
+                {inviteBusy ? "Sending…" : "Send invite"}
               </button>
             </div>
             {inviteMsg && (

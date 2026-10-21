@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { Mic, ArrowUpRight, BookOpen, Users, Layers } from "lucide-react";
@@ -18,7 +18,12 @@ type Dash = {
     shared_memories: number;
   };
   quota: { used?: number; limit?: number | null };
-  recent_stories: Array<{ id: string; title?: string; summary?: string }>;
+  recent_stories: Array<{
+    id: string;
+    title?: string;
+    summary?: string;
+    status?: string;
+  }>;
   recent_events: Array<{ year?: number; title: string }>;
 };
 
@@ -26,13 +31,24 @@ export default function Dashboard() {
   const { vaultId, user, apiFetch } = useAuth();
   const [data, setData] = useState<Dash | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!vaultId) return;
     apiFetch("/dashboard")
       .then((r) => (r.ok ? r.json() : null))
       .then(setData)
       .catch(() => setData(null));
   }, [vaultId, apiFetch]);
+
+  useEffect(() => {
+    load();
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [load]);
 
   const c = data?.counts;
   const quotaLabel =
@@ -69,11 +85,12 @@ export default function Dashboard() {
           </Link>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-10">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-10">
           {[
             { label: "Stories", value: c?.stories ?? "—", href: "/story_library" },
             { label: "People", value: c?.people ?? "—", href: "/family" },
-            { label: "Events", value: c?.events ?? "—", href: "/timeline_home" },
+            { label: "Timeline", value: c?.events ?? "—", href: "/timeline_home" },
+            { label: "Artifacts", value: c?.artifacts ?? "—", href: "/artifacts" },
             { label: "Shared", value: c?.shared_memories ?? "—", href: "/memories" },
           ].map((s) => (
             <Link
@@ -125,7 +142,14 @@ export default function Dashboard() {
                       href={`/story/${s.id}`}
                       className="block rounded-2xl border border-line bg-white px-5 py-4 hover:border-brass/40 transition"
                     >
-                      <div className="font-semibold text-ink">{s.title || "Untitled"}</div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-semibold text-ink">{s.title || "Untitled"}</div>
+                        {s.status && s.status !== "ready" && (
+                          <span className="text-[11px] uppercase tracking-wide text-brass-deep">
+                            {s.status}
+                          </span>
+                        )}
+                      </div>
                       {s.summary && (
                         <p className="text-sm text-ink-soft mt-1 line-clamp-2 leading-relaxed">
                           {s.summary}

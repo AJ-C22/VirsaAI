@@ -52,7 +52,7 @@ def main():
     API_KEY = os.getenv("GEMINI_KEY")
 
     # 1. TRANSCRIBE AUDIO
-    text = transcribe_audio("audio_files/life_story_2.mp3")
+    text = transcribe_audio("audio_files/life_story_2.mp3")["text"]
 
     # 2. ORGANIZE INTO A FULL BIOGRAPHY
     organized_story = parse_text_gemini(text, API_KEY)

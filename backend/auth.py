@@ -502,12 +502,12 @@ def check_story_quota(vault_id: str) -> Dict[str, Any]:
             if not row:
                 return {"allowed": False, "reason": "Vault not found"}
             plan, limit = row[0], row[1]
-            # Count ready + in-flight so concurrent uploads cannot bypass quota
+            # Count every story except failures so in-flight uploads still use quota.
             cur.execute(
                 """
                 SELECT COUNT(*) FROM stories
                 WHERE vault_id = %s
-                  AND status IN ('ready', 'processing', 'queued', 'uploading')
+                  AND status <> 'failed'
                 """,
                 (vault_id,),
             )
@@ -542,16 +542,23 @@ def vault_dashboard_stats(vault_id: str) -> Dict[str, Any]:
             if not v:
                 raise ValueError("Vault not found")
 
-            def count(sql: str) -> int:
-                cur.execute(sql, (vault_id,))
+            def count(sql: str, params: tuple | None = None) -> int:
+                cur.execute(sql, params if params is not None else (vault_id,))
                 return cur.fetchone()[0]
 
             stories = count(
-                "SELECT COUNT(*) FROM stories WHERE vault_id = %s AND status = 'ready'"
+                "SELECT COUNT(*) FROM stories WHERE vault_id = %s AND status <> 'failed'"
             )
             people = count("SELECT COUNT(*) FROM persons WHERE vault_id = %s")
             events = count(
-                "SELECT COUNT(*) FROM timeline_events WHERE vault_id = %s AND status = 'confirmed'"
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM timeline_events
+                    WHERE vault_id = %s AND status = 'confirmed')
+                  + (SELECT COUNT(*) FROM artifacts
+                    WHERE vault_id = %s AND taken_year IS NOT NULL)
+                """,
+                (vault_id, vault_id),
             )
             artifacts = count("SELECT COUNT(*) FROM artifacts WHERE vault_id = %s")
             shared = count("SELECT COUNT(*) FROM shared_memories WHERE vault_id = %s")
